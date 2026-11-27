@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tesla 哨兵视频查看器 - 单文件, 纯标准库, 无依赖
-功能: 多路播放器(4路/6路自适应) / 时间线 / 皮肤上传 / 锁车语音上传(经归档同步写入车机U盘)
+功能: 多路播放器(4路/6路自适应) / 时间线 / 锁车语音上传(经归档同步写入车机U盘)
 访问: http://<f50-ip>:8080
 """
 import base64
@@ -31,6 +31,7 @@ import select
 import http.client
 import ssl
 import zipfile
+import zlib
 import tempfile
 import sys
 import fcntl
@@ -461,7 +462,6 @@ if _fixed_conf_paths:
 
 # 路径/端口优先取环境变量 (缺失时已由 _load_conf 从 conf 补齐)。
 ARCHIVE = os.environ.get("TSF_ARCHIVE", "/archive")
-SKIN_DIR = os.path.join(ARCHIVE, ".skins")
 AUDIO_Q = os.path.join(ARCHIVE, "boombox-queue")
 AUDIO_DONE = os.path.join(ARCHIVE, "boombox-done")
 AUDIO_LIB = os.path.join(ARCHIVE, "audio")   # 锁车声音/音效素材库
@@ -531,7 +531,7 @@ for language, recent_label in (
 # 注入页面用的 JSON (预生成, 避免每次请求都序列化)
 I18N_JS = json.dumps(LANG_TABLE, ensure_ascii=False, separators=(",", ":"))
 LANG_JS = json.dumps([[c, n] for c, n in LANG_NAMES], ensure_ascii=False, separators=(",", ":"))
-MAX_UPLOAD = 100 * 1024 * 1024  # 通用文件上传上限 100MB (皮肤/音频有自己的更小限制)
+MAX_UPLOAD = 100 * 1024 * 1024  # 通用文件上传上限 100MB (音频等类型有自己的更小限制)
 MAX_JSON = 1024 * 1024          # 普通 JSON 接口请求体上限 1MB (文件管理/改密码/推送配置等)
 SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长期占线程
 
@@ -539,7 +539,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.007"
+APP_VERSION = "2026.11.28.008"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -1850,7 +1850,7 @@ def load_settings():
                 d["auto_update"] = bool(j["auto_update"])
             d["auto_paused"] = bool(j.get("auto_paused", False))
             st = str(j.get("ui_style") or "")
-            if st in ("default", "apple", "claude", "pixel"):
+            if st in ("default", "pixel"):
                 d["ui_style"] = st
             # 自定义标题名: 只留纯文本 (页面与登录页都会用到, 不让 HTML 混进来)
             nm = str(j.get("brand_name") or "").strip()[:BRAND_NAME_MAX]
@@ -2066,7 +2066,7 @@ html[data-theme="light"] {
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background:var(--bg); color:var(--text); font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
   transition:background .25s,color .25s; }
-/* 内联 SVG 图标: 尺寸跟字号走 (1em), 颜色吃 currentColor, 所以深浅色/四套风格都不用单独改 */
+/* 内联 SVG 图标: 尺寸跟字号走 (1em), 颜色吃 currentColor, 所以深浅色/两套风格都不用单独改 */
 .ic { width:1.15em; height:1.15em; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:1.85;
   stroke-linecap:round; stroke-linejoin:round; vertical-align:-.15em; }
 header h1 .ic { width:22px; height:22px; margin-right:6px; color:var(--accent); }
@@ -2591,6 +2591,13 @@ select.ninput { cursor:pointer; }
 /* 系统更新 (OTA) */
 .updrow { display:flex; align-items:baseline; gap:8px; padding:7px 0; font-size:13px; }
 .updk { color:var(--muted); min-width:64px; flex:0 0 auto; }
+#tab-update .updsource { display:grid; grid-template-columns:64px minmax(0,1fr) 40px minmax(130px,160px);
+  align-items:center; gap:12px; padding:11px 12px; border:1px solid var(--line); border-radius:10px; background:var(--panel2); }
+#tab-update .updsource .updk { min-width:0; }
+#tab-update .updsource #upd-repo-fixed { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color:var(--text); font-size:12.5px; font-weight:600; }
+#tab-update .updsource .ninput { width:100%; min-width:0; margin:0; }
+#tab-update .updsource #upd-branch-custom { grid-column:2 / 5; }
 .updtag { font-size:11px; padding:1px 8px; border-radius:9px; background:var(--amberbg); color:var(--amber); border:1px solid var(--amberline); white-space:nowrap; }
 .updtag.new { background:rgba(232,68,63,.14); color:var(--accent); border-color:rgba(232,68,63,.32); }
 .updnotes { display:none; background:var(--panel2); border-radius:10px; padding:9px 12px; font-size:12.5px; line-height:1.85; color:var(--muted); margin:6px 0 2px; }
@@ -2677,9 +2684,9 @@ select.ninput { cursor:pointer; }
 /* 文件管理: 路径栏 / 列表表头 / 文件信息 / 预览 */
 .fm-pathbar { display:flex; align-items:center; gap:10px; margin-top:10px; padding-top:9px; border-top:1px solid var(--line2); cursor:text; }
 .fm-pathbar #crumb { flex:1; min-width:0; font-size:12px; line-height:1.8; word-break:break-all; }
-.fm-pathform { display:flex; gap:8px; margin-top:10px; }
-.fm-pathform input { flex:1; min-width:0; background:var(--bg); border:1px solid var(--line2); border-radius:8px; color:var(--text); padding:8px 10px; font-size:12.5px; outline:none; }
-.fm-pathform button { flex:0 0 auto; background:var(--accent); border:1px solid var(--accent); color:#fff; border-radius:8px; padding:0 16px; font-size:12.5px; cursor:pointer; }
+.fm-pathbar #crumb.editing { display:flex; }
+.fm-pathbar #crumb.editing > :not(.fm-pathinput) { display:none; }
+.fm-pathinput { flex:1; width:100%; min-width:0; background:var(--bg); border:1px solid var(--line2); border-radius:8px; color:var(--text); padding:4px 8px; font:inherit; outline:none; }
 .fm-listhead { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:0 12px 7px; font-size:11.5px; color:var(--muted); }
 .fm-listhead .fm-allwrap { display:flex; align-items:center; gap:6px; cursor:pointer; }
 .fm-listhead input[type=checkbox] { width:17px; height:17px; accent-color:var(--accent); cursor:pointer; }
@@ -2716,15 +2723,15 @@ select.ninput { cursor:pointer; }
 .support-sec:last-child { margin-bottom:2px; }
 .support-title { font-size:13px; font-weight:600; color:var(--text); margin-bottom:4px; }
 .support-text { font-size:11.5px; color:var(--muted2); line-height:1.6; margin-bottom:8px; }
-.support-text a { color:var(--accent); text-decoration:none; }
-.support-text a:hover { text-decoration:underline; }
+.support-text a, #tab-about .about-list a { color:var(--accent); text-decoration:none; }
+.support-text a:hover, #tab-about .about-list a:hover { text-decoration:underline; }
 .support-qrs { display:flex; gap:10px; flex-wrap:wrap; }
 .support-qrs figure { margin:0; flex:1 1 120px; min-width:0; max-width:150px; text-align:center; }
 .support-qrs img { width:100%; aspect-ratio:1; object-fit:contain; border-radius:8px; border:1px solid var(--line2); background:#fff; display:block; }
 .support-qrs figcaption { font-size:10.5px; color:var(--muted); margin-top:5px; line-height:1.4; }
 #tab-about #about-logs { margin-top:0; }
-#about-readme .about-list { margin:0 0 10px; padding-left:18px; color:var(--muted2); font-size:11.5px; line-height:1.75; }
-#about-readme .about-list li { margin:1px 0; }
+#tab-about .about-list { margin:0 0 10px; padding-left:18px; color:var(--muted2); font-size:11.5px; line-height:1.75; }
+#tab-about .about-list li { margin:1px 0; }
 .item .tag { font-size:10.5px; color:#4cc38a; }
 .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--accent); color:#fff; padding:9px 20px; border-radius:20px; font-size:13px; z-index:300; display:none; }
 /* 全新安装首次进入: 引导到存储分配完成设置 */
@@ -2793,67 +2800,11 @@ body.livemode #grid, body.livemode #empty { display:none !important; }
 .lvrow select { padding:9px 10px; border-radius:9px; border:1px solid var(--line2); background:var(--panel2); color:var(--text); font-size:13px; }
 .lvbody > .hint { margin-top:2px; margin-bottom:0; }
 @media (max-width:640px){ .expp { left:50%; right:auto; transform:translateX(-50%); bottom:78px; max-height:calc(100vh - 120px); width:min(340px,94vw); } }
-/* ===== 可选界面风格: 默认 / Apple / Claude / 像素 =====
+/* ===== 可选界面风格: 默认 / 像素 =====
    只覆盖颜色、圆角、阴影与少量排版, 不改布局与 DOM, 与深/浅色主题正交。
    放在基础样式之后, 保证同名选择器 (如 .tab.active) 能盖过默认规则。 */
-html[data-style="apple"] {
-  --bg:#f5f5f7; --headbg:rgba(255,255,255,.78); --panel:#ffffff; --panel2:#f0f0f2; --chipbg:#ffffff;
-  --line:#e6e6eb; --line2:#d6d6dc; --text:#1d1d1f; --muted:#6e6e73; --muted2:#86868b;
-  --accent:#ff3b30; --blue:#0071e3; --shadow:0 1px 2px #00000008, 0 10px 28px #0000000f; --headline:#00000000;
-}
-html[data-style="apple"][data-theme="dark"] {
-  --bg:#000000; --headbg:rgba(28,28,30,.78); --panel:#1c1c1e; --panel2:#2c2c2e; --chipbg:#1c1c1e;
-  --line:#2c2c2e; --line2:#3a3a3c; --text:#f5f5f7; --muted:#a1a1a6; --muted2:#8e8e93;
-  --accent:#ff453a; --blue:#0a84ff; --shadow:0 10px 28px #00000066; --headline:#ffffff00;
-}
-html[data-style="claude"] {
-  --bg:#faf9f5; --headbg:rgba(250,249,245,.86); --panel:#ffffff; --panel2:#f2efe7; --chipbg:#fffdf8;
-  --line:#e8e3d7; --line2:#ddd6c8; --text:#1f1e1d; --muted:#6b6862; --muted2:#8a857c;
-  --accent:#c96442; --blue:#b8563a; --shadow:0 1px 0 #00000006; --headline:#00000000;
-}
-html[data-style="claude"][data-theme="dark"] {
-  --bg:#1f1e1d; --headbg:rgba(31,30,29,.86); --panel:#262521; --panel2:#302e29; --chipbg:#262521;
-  --line:#35322c; --line2:#423e36; --text:#f0eee6; --muted:#a8a49a; --muted2:#8f8b81;
-  --accent:#d97757; --blue:#d97757; --shadow:none; --headline:#ffffff00;
-}
-html[data-style="apple"] header,
-html[data-style="claude"] header {
-  box-shadow:none; border-bottom:1px solid var(--line);
-  backdrop-filter:saturate(180%) blur(18px); -webkit-backdrop-filter:saturate(180%) blur(18px);
-}
-html[data-style="apple"] header h1 { font-weight:600; letter-spacing:-.2px; }
-html[data-style="apple"] .card { border-color:transparent; border-radius:18px;
-  box-shadow:0 1px 2px #0000000a, 0 8px 24px #0000000d; }
-html[data-style="apple"] .card:hover { transform:translateY(-2px); box-shadow:0 2px 4px #0000000d, 0 14px 34px #00000014; }
-html[data-style="apple"] .thumb { border-radius:12px; }
-html[data-style="apple"] .storcard { border-radius:18px; border-color:transparent; }
-html[data-style="apple"] .syscell { border-radius:10px; border-color:transparent; }
-html[data-style="apple"] .chip { border-radius:999px; background:#fff; box-shadow:0 .5px 1px #0000000a; }
-html[data-style="apple"] .chip.on { background:var(--blue); box-shadow:none; }
-/* 页签做成 iOS 分段控件: 灰槽里浮起一块白色选中块, 而不是深色药丸 */
-html[data-style="apple"] .tab { border-radius:999px; background:#e9e9ec; color:#6e6e73; }
-html[data-style="apple"] .tab:hover { color:#1d1d1f; }
-html[data-style="apple"] .tab.active { background:#fff; color:#1d1d1f;
-  box-shadow:0 .5px 2px #0000001f, 0 0 0 .5px #0000000a; }
-html[data-style="apple"][data-theme="dark"] .tab { background:#1c1c1e; color:#a1a1a6; }
-html[data-style="apple"][data-theme="dark"] .tab.active { background:#3a3a3c; color:#fff;
-  box-shadow:0 1px 3px #00000066; }
-html[data-style="apple"] .panel { border-radius:20px; box-shadow:0 24px 80px #00000033; }
-html[data-style="apple"] .upbtn { border-radius:14px; }
-html[data-style="claude"] header h1 { font-weight:600; letter-spacing:.1px; }
-html[data-style="claude"] .card { border-radius:14px; box-shadow:none; border-color:var(--line); }
-html[data-style="claude"] .card:hover { transform:none; box-shadow:0 2px 10px #00000009; }
-html[data-style="claude"] .storcard { border-radius:14px; box-shadow:none; }
-html[data-style="claude"] .syscell { border-radius:9px; border-color:transparent; background:var(--panel2); }
-html[data-style="claude"] .chip { border-radius:11px; }
-html[data-style="claude"] .chip.on { border-color:var(--blue); }
-html[data-style="claude"] .tab { border-radius:10px; }
-html[data-style="claude"] .panel { border-radius:16px; border:1px solid var(--line); box-shadow:0 20px 60px #00000026; }
-html[data-style="claude"] .upbtn { border-radius:11px; }
-html[data-style="claude"] .storbar { border-radius:3px; }
-html[data-style="claude"] .toast { border-radius:12px; }
 /* 界面风格选择卡 (设置 → 外观): 紧凑精致, 不占满整行高度 */
-.stylepick { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; margin:8px 0 12px; }
+.stylepick { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; margin:8px 0 12px; }
 .stylepick button { position:relative; padding:7px 8px 6px; border-radius:10px; border:1px solid var(--line);
   background:var(--panel2); color:var(--text); cursor:pointer; text-align:left;
   font-size:12px; font-weight:600; line-height:1.2; transition:border-color .15s,background .15s,box-shadow .15s; }
@@ -2864,18 +2815,6 @@ html[data-style="claude"] .toast { border-radius:12px; }
   text-align:center; font-weight:700; }
 .stylepick .sw { display:flex; gap:2px; margin-bottom:5px; }
 .stylepick .sw i { display:block; height:10px; flex:1; border-radius:3px; border:1px solid #00000012; }
-/* Apple 风格下用系统设置那种克制、轻量的分组样式 */
-html[data-style="apple"] .stylepick button { background:#fff; border-color:#e8e8ed; border-radius:11px;
-  box-shadow:0 .5px 1.5px #0000000f; }
-html[data-style="apple"][data-theme="dark"] .stylepick button { background:#1c1c1e; border-color:#2c2c2e; }
-html[data-style="apple"] .stylepick .sw i { border-color:#0000000a; }
-html[data-style="apple"] .stabs { gap:3px; padding:3px; border-radius:12px; background:#e9e9ec; }
-html[data-style="apple"] .stab { padding:7px 4px; border-radius:9px; background:transparent;
-  color:#6e6e73; font-size:12px; font-weight:600; }
-html[data-style="apple"] .stab.active { background:#fff; color:#1d1d1f; box-shadow:0 .5px 2px #0000001f; }
-html[data-style="apple"][data-theme="dark"] .stabs { background:#1c1c1e; }
-html[data-style="apple"][data-theme="dark"] .stab { color:#a1a1a6; }
-html[data-style="apple"][data-theme="dark"] .stab.active { background:#3a3a3c; color:#fff; }
 @media (max-width:520px){ .stylepick { grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
   .stylepick button { padding:7px 7px 6px; font-size:11.5px; } }
 /* 标题与图标 (设置 → 外观) */
@@ -3147,7 +3086,7 @@ body.watching { overflow:hidden; }
   .player .ptop { min-height:32px; } .player .cambar button { min-height:30px; padding:4px 9px; }
   .transport { padding:0; } .clockline output { font-size:15px; }
 }
-/* Shared shell for the library, player and settings. Custom skins may override it. */
+/* Shared shell for the library, player and settings. */
 :root { --app-header:64px; --accent:#1598ba; --blue:#53b3d2; --bg:#151d25; --headbg:#1b2630; --panel:#1b2630; --panel2:#243340; --chipbg:#243340; --line:#344653; --line2:#2a3b48; --text:#e5edf3; --muted:#a4b5c2; --muted2:#6d8292; --shadow:none; --selected:#173d4c; --danger:#db6565; }
 html[data-theme="light"] { --bg:#f4f8fb; --headbg:#fff; --panel:#fff; --panel2:#edf4f8; --chipbg:#edf4f8; --line:#dce5eb; --line2:#e8eef2; --text:#1e2933; --muted:#617384; --muted2:#9baab5; --accent:#087fa1; --blue:#087fa1; --shadow:none; --selected:#e6f3f8; --danger:#b33b3b; }
 body { font-size:14px; }
@@ -3180,7 +3119,7 @@ body.watching .library-page,body.settings-open .library-page { visibility:hidden
 .storcard { display:flex; flex-wrap:wrap; align-items:center; gap:24px; padding:14px 48px 14px 20px; border-radius:8px; background:var(--selected); border:1px solid var(--line); box-shadow:none; }
 .storcard #live { display:inline-flex!important; order:0; margin:0; flex-shrink:0; }
 .storwrap.status-only :is(.storage-brief,.storextra,.stortog) { display:none; }
-.storage-brief { width:clamp(180px,25vw,320px); min-width:0; }
+.storage-brief { flex:1 1 0; width:auto; min-width:0; }
 .storrow { font-size:13px; gap:12px; }
 .storval { font-variant-numeric:tabular-nums; }
 .storbar { height:3px; margin:7px 0 0; background:var(--line); }
@@ -3197,7 +3136,7 @@ body.watching .library-page,body.settings-open .library-page { visibility:hidden
 .livebtn:active { transform:translateY(1px); }
 @keyframes livepulse { 0%,100%{opacity:1} 50%{opacity:.35} }
 @media (prefers-reduced-motion:reduce) { .livebtn::after { animation:none; } }
-.storextra { width:100%; margin:0; padding-top:14px; border-top:1px solid var(--line); }
+.storextra { margin:0; }
 .stortog { right:7px; top:16px; }
 .library-toolbar { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
 .library-toolbar h2 { margin:0; font-size:22px; }
@@ -3528,7 +3467,6 @@ body.settings-open { overflow:hidden; }
   .storwrap { margin-bottom:20px; }
   .storcard { gap:12px; padding:12px 36px 12px 12px; }
   .storcard #live { flex-basis:100%; max-width:none; }
-  .storage-brief { width:100%; }
   .stortog { top:8px; }
   .library-toolbar h2 { font-size:20px; }
   .library-filters { gap:8px; flex-wrap:wrap; }
@@ -3584,10 +3522,9 @@ body.settings-open { overflow:hidden; }
   .storage-usage { gap:16px 6px; font-size:12px; }
 }
 @media (max-width:600px) {
-  /* 设置页移动端: 更新源一行控件改为全宽堆叠, 避免下拉框被挤偏/变小 */
-  #tab-update .updrow { align-items:center; row-gap:8px; }
-#tab-update .updrow #upd-branch { flex:1 1 calc(100% - 76px) !important; }
-#tab-update .updrow #upd-branch-custom { flex:1 1 100% !important; }
+  /* 更新源在窄屏下使用两列网格, 标签和控件保持对齐 */
+  #tab-update .updsource { grid-template-columns:52px minmax(0,1fr); gap:10px 12px; }
+  #tab-update .updsource #upd-branch-custom { grid-column:2; }
   /* 更新卡片: 检查更新与立即升级同一行各占一半, 自动更新独占一行 */
   #tab-update .updvercard .updbtns { row-gap:8px; }
   #tab-update .updbtns #upd-check { flex:1 1 42%; min-width:0; }
@@ -3699,7 +3636,7 @@ body.settings-open { overflow:hidden; }
 })();
 </script></head><body>
 <!-- 内联 SVG 图标: 单文件自包含, 不引外链/字体; 线宽与颜色跟 currentColor 走,
-     4 套界面风格 + 深浅色自动适配 (emoji 会随系统渲染成彩色卡通, 跟 UI 不搭) -->
+     2 套界面风格 + 深浅色自动适配 (emoji 会随系统渲染成彩色卡通, 跟 UI 不搭) -->
 <svg id="isprite" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden"><defs>
 <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
 <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="5" width="4" height="14" rx="1"/><rect x="13.5" y="5" width="4" height="14" rx="1"/></symbol>
@@ -3746,7 +3683,7 @@ body.settings-open { overflow:hidden; }
 </div><div class="storage-brief"><div class="storrow"><span class="storlab">归档区</span><span class="storval" id="storarc"></span></div>
 <div class="storbar"><i id="storarcbar"></i></div>
 </div>
-<div class="storextra" id="storextra">
+<div class="storage-brief storextra" id="storextra">
 <div class="storrow"><span class="storlab">总占用</span><span class="storval" id="stortot"></span></div>
 <div class="storbar"><i id="stortotbar"></i></div>
 </div>
@@ -4050,21 +3987,16 @@ body.settings-open { overflow:hidden; }
       <label class="fm-tool upbtn"><svg class="ic"><use href="#i-upload"/></svg>上传图标 (png/jpg/webp, ≤3MB)<input type="file" id="brand-file" accept=".png,.jpg,.jpeg,.webp" hidden></label>
       <button class="brandreset" onclick="resetBrand()">恢复默认图标与名称</button>
     </div>
-    <h3 style="margin-top:22px">界面与背景</h3>
+    <h3 style="margin-top:22px">界面风格</h3>
     <div class="hint">界面风格 · 只换配色、圆角与阴影, 不动功能; 选完即时生效并记住</div>
     <div class="stylepick" id="style-pick">
       <button data-style="default" onclick="setStyle('default')"><span class="sw"><i style="background:#0e1216"></i><i style="background:#e8443f"></i></span>默认</button>
-      <button data-style="apple" onclick="setStyle('apple')"><span class="sw"><i style="background:#ffffff"></i><i style="background:#0071e3"></i></span>Apple</button>
-      <button data-style="claude" onclick="setStyle('claude')"><span class="sw"><i style="background:#faf9f5"></i><i style="background:#c96442"></i></span>Claude</button>
       <button data-style="pixel" onclick="setStyle('pixel')"><span class="sw"><i style="background:#1a1c2c"></i><i style="background:#ff004d"></i></span>像素</button>
     </div>
-    <div class="hint">上传 CSS 皮肤文件或背景图 (jpg/png/webp)。CSS 中引用图片请用 /skin-media/文件名。</div>
-    <div class="hint"><code>body{background:url(/skin-media/bg.jpg) center/cover}</code></div>
-    <label class="fm-tool upbtn"><svg class="ic"><use href="#i-upload"/></svg>上传皮肤文件 (css/jpg/png/webp)<input type="file" id="skin-file" accept=".css,.jpg,.jpeg,.png,.webp" hidden></label>
-    <div id="skin-list"></div>
   </div>
   <div id="tab-audio" style="display:none">
-    <div class="hint">上传的音频先保存到归档区 <b>audio/</b> 目录，可上传多个用于筛选。格式仅 wav / mp3，单个 &lt;1MB；点「设为锁车声音」会像文件管理一样立即断开车机读取，把音频写入车机U盘根目录 LockChime.wav（mp3 自动转 wav，覆盖同名文件），写完立即恢复车机导出。</div>
+    <div class="hint">上传的音频先保存到归档区 <b>audio/</b> 目录，可上传多个用于筛选。格式仅 wav / mp3，单个 &lt;1MB；未连接车机U盘时，点「设为锁车声音」会自动连接并写入根目录 LockChime.wav（mp3 自动转 wav，覆盖同名文件），写完自动恢复车机导出；手动连接后则保持管理状态，可点「恢复车机导出」。</div>
+    <div id="audio-usb-status" style="margin-bottom:10px"></div>
     <div class="tool-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <label class="fm-tool upbtn accent-up" style="margin:0"><svg class="ic"><use href="#i-upload"/></svg>上传音频 (wav/mp3, &lt;1MB)<input type="file" id="audio-file" accept=".wav,.mp3" hidden multiple></label>
       <button class="mini" id="audio-rename-btn" onclick="audioRenameSel()" disabled>重命名</button>
@@ -4096,7 +4028,7 @@ body.settings-open { overflow:hidden; }
       <button onclick="usbAttachCancel()" style="background:#2a4658;border:none;color:#cfe9fa;border-radius:8px;padding:6px 14px;font-size:12.5px;cursor:pointer;margin-top:6px">取消重试</button>
     </div>
     <div id="usb-hint" class="hint">浏览和管理车机U盘 (特斯拉写入的镜像)。连接后会临时断开车机读取几秒，5 分钟无操作自动恢复。</div>
-    <div id="arch-hint" class="hint" style="display:none">归档区 (F50 内部存储): 查看器用的视频副本、皮肤、文件中转。</div>
+    <div id="arch-hint" class="hint" style="display:none">归档区 (F50 内部存储): 查看器用的视频副本与文件中转。</div>
     <div id="purge-box" class="fm-purge">
       <button onclick="purgeTeslaCam()"><svg class="ic"><use href="#i-trash"/></svg>清空 TeslaCam 全部录像</button>
       <span class="hint">仅删除 TeslaCam/ 内所有视频与事件文件夹，保留目录结构；Boombox、Wraps 等其他根目录不受影响。需先连接 U 盘。</span>
@@ -4114,14 +4046,10 @@ body.settings-open { overflow:hidden; }
         </div>
         <div class="row" id="fm-dest" style="display:none;margin-top:8px"></div>
         <!-- 第二行: 路径 (点击面包屑跳转, 双击原位编辑, 回车跳转) -->
-        <div class="fm-pathbar" id="fm-pathbar" ondblclick="fmPathEdit()" title="双击编辑路径">
+        <div class="fm-pathbar" id="fm-pathbar" ondblclick="fmPathEdit()" title="双击编辑路径，回车跳转，Esc 取消">
           <div id="crumb"></div>
           <span class="fm-count" id="fm-count">已选 0 项</span>
         </div>
-        <form class="fm-pathform" id="fm-pathform" hidden onsubmit="return fmPathSubmit(event)">
-          <input id="dest-dir" placeholder="/" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Escape')fmPathCancel()">
-          <button type="submit" class="fm-go">跳转</button>
-        </form>
       </div>
       <!-- 第三行: 文件列表 (首项返回上级, 左侧全选, 右侧大小/修改时间) -->
       <div class="fm-listhead">
@@ -4264,7 +4192,28 @@ body.settings-open { overflow:hidden; }
       <input class="ninput" id="nt-bark-server" placeholder="Bark 服务器：默认 https://api.day.app（自建可改）">
       <input class="ninput" id="nt-bark-key" type="password" placeholder="Bark Device Key（在 Bark App 首页复制，已保存则留空表示不修改）">
       <div class="nrow"><span>通知分组</span><input class="ninput" id="nt-bark-group" style="margin:0" placeholder="Tesla 哨兵" oninput="barkPreview()"></div>
-      <div class="nrow"><span>铃声</span><input class="ninput" id="nt-bark-sound" style="margin:0" placeholder="留空为默认铃声"></div>
+      <div class="nrow"><span>铃声</span><select class="ninput" id="nt-bark-sound" style="margin:0" onchange="barkSoundUI()">
+        <option value="">系统默认</option>
+        <option value="alarm">闹钟 alarm</option>
+        <option value="bell">铃声 bell</option>
+        <option value="chime">提示音 chime</option>
+        <option value="glass">玻璃 glass</option>
+        <option value="horn">喇叭 horn</option>
+        <option value="electronic">电子 electronic</option>
+        <option value="fanfare">号角 fanfare</option>
+        <option value="suspense">悬疑 suspense</option>
+        <option value="telegraph">电报 telegraph</option>
+        <option value="minuet">小步舞曲 minuet</option>
+        <option value="silence">无声 silence</option>
+        <option value="__custom__">自定义铃声…</option>
+      </select></div>
+      <input class="ninput" id="nt-bark-sound-custom" placeholder="自定义铃声名称（需与 Bark App 中的名称一致）" style="display:none" maxlength="80" spellcheck="false" autocapitalize="none" oninput="barkPreview()">
+      <div class="nrow"><span>通知级别</span><select class="ninput" id="nt-bark-level" style="margin:0" onchange="barkPreview()">
+        <option value="active">即时提醒（默认）</option>
+        <option value="timeSensitive">时效性通知（可突破专注模式）</option>
+        <option value="passive">被动通知（静默加入通知中心）</option>
+        <option value="critical">重要警告（忽略静音与专注模式）</option>
+      </select></div>
       <input class="ninput" id="nt-bark-icon" placeholder="通知图标 URL（可选）: https://…/icon.png">
       <div class="nrow"><span>附带触发截图</span><input type="checkbox" id="nt-bark-img" checked onchange="barkPreview()"></div>
       <div class="hint">截图通过 Bark 的图片参数显示：留空上方「访问地址」时自动用你最近访问的地址（手机连车机 WiFi 可直接显示）；不在车旁时填一个手机能访问到的地址。</div>
@@ -4279,8 +4228,9 @@ body.settings-open { overflow:hidden; }
 原因：侦测到物体移动</p></div>
           <div class="bk-thumb" id="bk-pv-img"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7.5h3.2l1.6-2h8.4l1.6 2H21v11H3z"/><circle cx="12" cy="13" r="3.6"/></svg></div>
         </div>
-        <div class="bk-foot">Bark · 分组 <span id="bk-pv-group">Tesla 哨兵</span></div>
+        <div class="bk-foot">Bark · 分组 <span id="bk-pv-group">Tesla 哨兵</span> · <span id="bk-pv-sound">系统默认</span> · <span id="bk-pv-level">即时提醒</span></div>
       </div>
+      <div class="hint">发送测试时优先使用最新真实事件；归档为空会自动使用虚拟事件，勾选截图时同时发送虚拟测试图，不会写入录像归档。</div>
     </div>
     <div class="updbtns">
       <button class="mini primary" onclick="ntSave()">保存设置</button>
@@ -4303,12 +4253,12 @@ body.settings-open { overflow:hidden; }
     <div class="updbtns" style="margin-top:16px"><button class="mini logout" onclick="doLogout()">退出登录</button></div>
   </div>
   <div id="tab-update" style="display:none">
-    <div class="updrow" style="flex-wrap:wrap;gap:8px;align-items:center">
+    <div class="updrow updsource">
       <span class="updk">更新源</span>
-      <b id="upd-repo-fixed" style="font-size:12.5px;color:var(--muted2)">作者仓库 · jiaoting/tesla-sentry-f50</b>
+      <b id="upd-repo-fixed">作者仓库 · jiaoting/tesla-sentry-f50</b>
       <span class="updk updk-branch">分支</span>
-      <select class="ninput" id="upd-branch" style="flex:0 1 130px;min-width:0" onchange="otaBranchUI()"></select>
-      <input class="ninput" id="upd-branch-custom" placeholder="自定义分支名，如 dev / release" style="display:none;flex:1 1 220px;min-width:0" spellcheck="false" autocapitalize="none" onchange="otaSaveTarget()" onkeydown="if(event.key==='Enter'){event.preventDefault();otaSaveTarget();}">
+      <select class="ninput" id="upd-branch" onchange="otaBranchUI()"></select>
+      <input class="ninput" id="upd-branch-custom" placeholder="自定义分支名，如 dev / release" style="display:none" spellcheck="false" autocapitalize="none" onchange="otaSaveTarget()" onkeydown="if(event.key==='Enter'){event.preventDefault();otaSaveTarget();}">
     </div>
     <div class="updvercard">
       <div class="updverline">
@@ -4353,19 +4303,66 @@ body.settings-open { overflow:hidden; }
       <pre class="logview" id="log-detail" hidden></pre>
     </details>
     <section class="support-sec" id="about-readme">
-      <div class="support-title">📖 项目说明 · README</div>
-      <div class="support-text">哨兵一剪梅 · 特斯拉哨兵云盘：把中兴 F50 存储版顶替原车 U 盘插进手套箱，车机照常录制，手机连 F50 WiFi 打开网页即可回看 4 / 6 路同步画面、逐帧读取 SEI 行车遥测，并导出带行车信息水印的视频。</div>
+      <div class="support-title">特斯拉云哨兵·中兴F50优化专版</div>
+      <div class="support-text">面向中兴 F50 / F50 存储版的特斯拉哨兵录像查看与管理工具。设备顶替原车 U 盘插进手套箱后，车机照常录制；手机连接 F50 WiFi 即可通过网页回看录像、读取行车遥测并导出视频。</div>
+      <div class="support-text">运行环境：OpenWrt + USB Gadget / configfs + 内核 exFAT + loop / losetup + root + Python 3.11+；镜像与归档建议放在 TF 卡。</div>
+      <div class="support-text"><a href="https://github.com/jiaoting/tesla-sentry-f50" target="_blank" rel="noopener">项目仓库</a> · MIT License</div>
+    </section>
+    <section class="support-sec" id="about-features">
+      <div class="support-title">功能</div>
       <ul class="about-list">
-        <li>虚拟 U 盘：稀疏 exFAT 镜像经 USB Gadget mass_storage 导出，网页设容量后即插即用</li>
-        <li>实时同步：每 15 秒只读解析镜像，不挂载、不断 USB，车机边写边看</li>
-        <li>多路回放：单路点开即播；全览 4 路 2×2 / 6 路 3×2，250 ms 同步校正</li>
-        <li>行车遥测：挡位 / 车速 / 油门 / 刹车 / 方向盘 / 转向灯 / AP / 坐标 / 加速度</li>
-        <li>清晰度：原画 / 720p / 480p / 360p，服务端转码缓存，首帧先发已有档</li>
-        <li>视频导出：单路 / zip / 多路合成，设备端直出带水印 H.264 mp4</li>
-        <li>文件管理 / 驾驶记录 / 推送通知 / 存储分配 / 录像保护 / 在线升级 / 登录保护 / 个性化</li>
+        <li>虚拟 U 盘：稀疏 exFAT 镜像经 USB Gadget mass_storage 导出，网页设置容量后即插即用。</li>
+        <li>实时同步：每 15 秒只读解析镜像，不挂载、不断开 USB，车机边写边看。</li>
+        <li>多路回放：单路点开即播；全览支持 4 路 2×2 / 6 路 3×2 与 250 ms 同步校正。</li>
+        <li>行车遥测：逐帧显示挡位、车速、油门、刹车、方向盘、转向灯、AP、坐标与加速度。</li>
+        <li>播放与导出：原画 / 720p / 480p / 360p，支持单路、ZIP、多路合成及带行车信息水印的 H.264 MP4。</li>
+        <li>录像管理：实时滚动记录、驾驶记录、事件筛选、文件管理、录像锁定与自动清理。</li>
+        <li>通知与维护：飞书 / 微信 / Bark 推送、存储分配、在线升级、登录保护、深浅主题与多语言。</li>
       </ul>
-      <div class="support-text">仅支持中兴 F50 存储版：OpenWrt + USB Gadget / configfs + 内核 exFAT + loop / losetup + root + Python 3.11+；镜像与归档建议放在 TF 卡。</div>
-      <div class="support-text"><a href="https://github.com/jiaoting/tesla-sentry-f50" target="_blank" rel="noopener">github.com/jiaoting/tesla-sentry-f50</a> · MIT License</div>
+    </section>
+    <section class="support-sec" id="about-optimization">
+      <div class="support-title">针对 F50 的专门优化</div>
+      <ul class="about-list">
+        <li>5G 上行：外网默认 480p，提供多档码率、10 秒起播缓冲与 20–25 秒预读，分片缓存减少弱网卡顿和重复转码。</li>
+        <li>快速出画：目标清晰度尚未就绪时先发送已有档位或首帧，后台继续转码，优先使用 faststart 产物。</li>
+        <li>资源调度：适配 1.4 GB 内存与无风扇机身，限制缩略图和转码并发；预转码与自动更新避开观看时段。</li>
+        <li>存储占用：稀疏镜像按真实写入计占，硬链接去重，孤儿缓存自动清理，安全预留不足时暂停同步并清理旧录像。</li>
+        <li>读写互斥：同步只读解析 exFAT；卸载、格式化、调整容量及写锁车声音时协调暂停同步和 USB 导出。</li>
+        <li>稳定运行：procd 自动拉起、开机自检、LUN 定时重挂；OTA 多源下载、原子替换、探活失败自动回滚。</li>
+      </ul>
+    </section>
+    <section class="support-sec" id="about-faq">
+      <div class="support-title">常见问题</div>
+      <ul class="about-list">
+        <li>车机不认盘或提示格式化：先检查 USB Gadget、exFAT 与镜像状态；首次插入可按车机提示格式化，网页会重新识别卷偏移。</li>
+        <li>播放黑屏：原片多为 H.265 / HEVC，请使用支持 HEVC 的浏览器或解码器，也可选择服务端转码后的清晰度。</li>
+        <li>网页没有事件：确认顶部同步状态在线，检查镜像与归档路径，并在本页顶部「日志分析」查看同步异常。</li>
+        <li>缩略图缺失或长期缓冲：检查 ffmpeg / ffprobe 是否可用，可通过安装器的依赖修复选项重新安装并写回配置。</li>
+        <li>检查更新失败：更新功能会并发尝试多个下载源；可根据页面列出的逐源错误判断网络、DNS 或证书问题。</li>
+        <li>导出没有水印：设备端烧录水印需要中文字体，请在导出面板安装 NotoSansSC 或上传 TTF / OTF 字体后重试。</li>
+      </ul>
+    </section>
+    <section class="support-sec" id="about-security">
+      <div class="support-title">安全提示</div>
+      <ul class="about-list">
+        <li>安装器默认生成随机登录密码并开启全站认证；不要在不可信网络中删除 auth.conf 或关闭认证。</li>
+        <li>网页认证与 Cookie 默认走 HTTP。公网访问务必使用 HTTPS、VPN 或安全隧道，并妥善保管登录密码和推送密钥。</li>
+        <li>格式化数据卡、车机 U 盘以及调整容量可能清除全部数据；操作前备份重要录像并仔细核对目标设备。</li>
+        <li>文件管理、锁车声音与车辆涂装写入会临时断开车机读取；请在安全停车且无需录像时操作，完成后恢复车机导出。</li>
+      </ul>
+    </section>
+    <section class="support-sec" id="about-disclaimer">
+      <div class="support-title">免责提示</div>
+      <div class="support-text">本项目为个人爱好项目，与特斯拉、中兴通讯均无关。修改车机存储行为存在数据丢失、录制中断、设备异常等风险；使用者应自行评估并承担操作后果，先备份重要数据并用小容量镜像验证。作者不对因安装、升级或使用本项目造成的直接或间接损失承担责任。</div>
+    </section>
+    <section class="support-sec" id="about-credits">
+      <div class="support-title">上游感谢</div>
+      <ul class="about-list">
+        <li><a href="https://github.com/baicyber/tesla-sentry-f50" target="_blank" rel="noopener">baicyber/tesla-sentry-f50</a>：本项目上游仓库，感谢原作者的开源与持续贡献。</li>
+        <li><a href="https://github.com/marcone/teslausb" target="_blank" rel="noopener">teslausb</a>：树莓派模拟 U 盘归档的开创性项目，为本项目提供思路来源。</li>
+        <li><a href="https://github.com/weitanism/sentrybox" target="_blank" rel="noopener">SentryBox</a>：车机常驻设备的产品化实践参考。</li>
+        <li><a href="https://github.com/denysvitali/tesla-sentry-viewer" target="_blank" rel="noopener">tesla-sentry-viewer</a>：网页查看器形态参考。</li>
+      </ul>
       <div class="hint" style="margin:6px 0 0">本说明与仓库 README 同步，随程序更新一起发布。</div>
     </section>
   </div></div>
@@ -4496,11 +4493,11 @@ function cycleTheme() {
   applyTheme(nxt);
 }
 applyTheme(localStorage.getItem('tsf_theme') || 'auto');
-/* ---------- 可选界面风格: 默认 / Apple / Claude / 像素 ----------
+/* ---------- 可选界面风格: 默认 / 像素 ----------
    只切换 html[data-style], 配色与圆角交给 CSS; 选择存本地并同步到服务端,
    换手机/浏览器也能保持一致。和深/浅色主题互不影响 */
 const STYLE_KEY = 'tsf_style';
-const STYLE_LIST = ['default', 'apple', 'claude', 'pixel'];
+const STYLE_LIST = ['default', 'pixel'];
 function applyStyle(s) {
   if (STYLE_LIST.indexOf(s) < 0) s = 'default';
   if (s === 'default') delete document.documentElement.dataset.style;
@@ -8101,7 +8098,7 @@ function stab(which) {
   if (which === 'geocode') geocodeLoad();
   if (which === 'auth') pwLoad();
   if (which === 'wraps') refreshWraps();
-  if (which === 'skin') { applyStyle(localStorage.getItem(STYLE_KEY) || 'default'); refreshSkins(); refreshBrand(); }
+  if (which === 'skin') { applyStyle(localStorage.getItem(STYLE_KEY) || 'default'); refreshBrand(); }
   if (which === 'storage') {
     // 外置卡管理默认折叠, 只有首次使用向导会主动展开
     const extCard = document.getElementById('storage-extcard');
@@ -9640,6 +9637,21 @@ function ntChannelUI() {
   if (urlHint) urlHint.style.display = ch === 'wechat' ? 'none' : '';
   if (ch === 'bark') barkPreview();
 }
+const BARK_SOUND_LABELS = {'':'系统默认', alarm:'闹钟', bell:'铃声', chime:'提示音', glass:'玻璃',
+  horn:'喇叭', electronic:'电子', fanfare:'号角', suspense:'悬疑', telegraph:'电报', minuet:'小步舞曲', silence:'无声'};
+const BARK_LEVEL_LABELS = {active:'即时提醒', timeSensitive:'时效性通知', passive:'被动通知', critical:'重要警告'};
+function barkSoundValue() {
+  const sel = document.getElementById('nt-bark-sound');
+  return sel.value === '__custom__'
+    ? document.getElementById('nt-bark-sound-custom').value.trim() : sel.value;
+}
+function barkSoundUI() {
+  const sel = document.getElementById('nt-bark-sound');
+  const custom = sel.value === '__custom__';
+  const inp = document.getElementById('nt-bark-sound-custom');
+  inp.style.display = custom ? '' : 'none';
+  barkPreview();
+}
 /* Bark 样式预览: 用示例数据实时渲染标题/正文/截图/分组 */
 function barkPreview() {
   const el = id => document.getElementById(id);
@@ -9660,6 +9672,9 @@ function barkPreview() {
   el('bk-pv-title').textContent = fill(el('nt-bark-title').value, '🚨 {类型}');
   el('bk-pv-body').textContent = fill(el('nt-bark-body').value, '时间：{时间}\n位置：{位置}\n原因：{原因}');
   el('bk-pv-group').textContent = (el('nt-bark-group').value || '').trim() || 'Tesla 哨兵';
+  const sound = barkSoundValue();
+  el('bk-pv-sound').textContent = BARK_SOUND_LABELS[sound] || sound || '自定义铃声';
+  el('bk-pv-level').textContent = BARK_LEVEL_LABELS[el('nt-bark-level').value] || '即时提醒';
   el('bk-pv-img').classList.toggle('off', !el('nt-bark-img').checked);
 }
 function ntWxApiUI() {
@@ -9702,12 +9717,17 @@ async function ntLoad() {
     document.getElementById('nt-bark-key').placeholder = j.has_bark_key
       ? 'Bark Device Key 已保存, 留空表示不修改' : 'Bark Device Key（在 Bark App 首页复制）';
     document.getElementById('nt-bark-group').value = j.bark_group || '';
-    document.getElementById('nt-bark-sound').value = j.bark_sound || '';
+    const barkSound = j.bark_sound || '';
+    const barkSoundSel = document.getElementById('nt-bark-sound');
+    const builtInSound = Array.from(barkSoundSel.options).some(o => o.value === barkSound);
+    barkSoundSel.value = builtInSound ? barkSound : '__custom__';
+    document.getElementById('nt-bark-sound-custom').value = builtInSound ? '' : barkSound;
+    document.getElementById('nt-bark-level').value = BARK_LEVEL_LABELS[j.bark_level] ? j.bark_level : 'active';
     document.getElementById('nt-bark-icon').value = j.bark_icon || '';
     document.getElementById('nt-bark-img').checked = j.bark_img !== false;
     document.getElementById('nt-bark-title').value = j.bark_title || '';
     document.getElementById('nt-bark-body').value = j.bark_body || '';
-    ntChannelUI(); ntWxApiUI(); barkPreview();
+    barkSoundUI(); ntChannelUI(); ntWxApiUI(); barkPreview();
     ntSetEye(ntHidden);
     const m = document.getElementById('nt-msg');
     if (j.last && j.last.msg) {
@@ -9739,7 +9759,8 @@ async function ntSave() {
     bark_server: document.getElementById('nt-bark-server').value.trim(),
     bark_key: document.getElementById('nt-bark-key').value.trim(),
     bark_group: document.getElementById('nt-bark-group').value.trim(),
-    bark_sound: document.getElementById('nt-bark-sound').value.trim(),
+    bark_sound: barkSoundValue(),
+    bark_level: document.getElementById('nt-bark-level').value,
     bark_icon: document.getElementById('nt-bark-icon').value.trim(),
     bark_img: document.getElementById('nt-bark-img').checked,
     bark_title: document.getElementById('nt-bark-title').value.trim(),
@@ -10154,39 +10175,6 @@ async function uploadFile(input, url, fields) {
   return j;
 }
 
-/* 皮肤 */
-async function refreshSkins() {
-  const j = await (await fetch('/api/skins')).json();
-  const list = document.getElementById('skin-list'); list.innerHTML = '';
-  if (!j.skins.length) { list.innerHTML = '<div class="hint">暂无皮肤, 使用默认外观</div>'; return; }
-  for (const s of j.skins) {
-    const d = document.createElement('div'); d.className = 'item';
-    d.innerHTML = `<span class="n">${s}</span>` + (s === j.active ? '<span class="tag">使用中</span>' : '') +
-      (s === j.active ? '' : `<button class="primary" onclick="applySkin('${s}')">应用</button>`) +
-      `<button class="danger" onclick="delSkin('${s}')">删除</button>`;
-    list.appendChild(d);
-  }
-}
-async function applySkin(s) {
-  await fetch('/api/skin/activate', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: s }) });
-  toast('皮肤已应用: ' + s); injectSkin(); refreshSkins();
-}
-async function delSkin(s) {
-  if (!confirm('删除皮肤 ' + s + ' ?')) return;
-  await fetch('/api/skin/' + encodeURIComponent(s), { method: 'DELETE' });
-  toast('已删除'); injectSkin(); refreshSkins();
-}
-async function injectSkin() {
-  let el = document.getElementById('userskin');
-  if (!el) { el = document.createElement('style'); el.id = 'userskin'; document.head.appendChild(el); }
-  const r = await fetch('/api/skin');
-  el.textContent = r.ok ? await r.text() : '';
-}
-document.getElementById('skin-file').onchange = async function () {
-  const j = await uploadFile(this, '/api/upload/skin');
-  if (j && j.ok) { refreshSkins(); if (j.activated) { injectSkin(); } }
-};
-
 /* 品牌: 标题栏的图标与名称 (服务端存 settings.json, 所有访客共用一套) */
 const BRAND = { custom: '', logo: '', ver: 0, loaded: false };
 function brandLogoURL() { return '/api/brand/logo?v=' + (BRAND.ver || 'd'); }
@@ -10264,7 +10252,61 @@ function audioAll(on) {
   });
   audioUpdateSel();
 }
+function audioUsbStatusHtml(attached) {
+  if (!attached) {
+    return '<div style="background:#3a2a12;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0b429;line-height:1.6">' +
+      'U盘当前未连接管理（车机正常读写中）<br>' +
+      '<button onclick="audioUsbAttach()" style="background:#e8443f;border:none;color:#fff;border-radius:8px;padding:7px 16px;font-size:12.5px;cursor:pointer;margin-top:6px"><svg class="ic"><use href="#i-link"/></svg>连接车机U盘 (临时断开车机读取)</button></div>';
+  }
+  return '<div style="background:#1a3325;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#4cc38a;line-height:1.6">' +
+    '已连接 — 车机读取已临时断开，可直接写入锁车声音<br>' +
+    '<span style="color:#7d8894;font-size:11.5px">断开满 5 分钟无操作会自动恢复车机导出</span><br>' +
+    '<button onclick="audioUsbDetach()" style="display:block;width:100%;background:#e8443f;border:none;color:#fff;border-radius:9px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer;margin-top:10px">恢复车机导出</button></div>';
+}
+async function refreshAudioUsbStatus() {
+  const st = document.getElementById('audio-usb-status');
+  if (!st) return;
+  try {
+    const j = await (await fetch('/api/usb/job', { cache: 'no-store' })).json();
+    st.innerHTML = audioUsbStatusHtml(!!j.attached);
+  } catch (e) {}
+}
+let audioUsbPoll = null;
+async function audioUsbAttach() {
+  toast('正在连接，车机读取将断开几秒…');
+  let j;
+  try {
+    j = await (await fetch('/api/usb/attach', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wait: true }) })).json();
+  } catch (e) { toast('连接失败'); return; }
+  if (!j.ok) { toast(j.msg || '连接失败'); refreshAudioUsbStatus(); return; }
+  const paint = job => {
+    const st = document.getElementById('audio-usb-status');
+    if (!st) return;
+    st.innerHTML = '<div style="background:#3a2a12;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0b429;line-height:1.6">' +
+      esc(job.message || '正在连接车机 U 盘…') + '（' + (job.elapsed || 0) + ' 秒，车机读取已断开）</div>';
+  };
+  paint(j.job || { state: 'running' });
+  clearInterval(audioUsbPoll);
+  audioUsbPoll = setInterval(async () => {
+    let s;
+    try { s = await (await fetch('/api/usb/job', { cache: 'no-store' })).json(); } catch (e) { return; }
+    const job = s.job || {};
+    if (job.state === 'running') { paint(job); return; }
+    clearInterval(audioUsbPoll); audioUsbPoll = null;
+    toast(job.state === 'done' ? '已连接车机U盘' : (job.message || '连接失败'));
+    refreshAudioUsbStatus();
+  }, 1000);
+}
+async function audioUsbDetach() {
+  let j;
+  try { j = await (await fetch('/api/usb/detach', { method: 'POST' })).json(); }
+  catch (e) { j = { ok: false, msg: '恢复失败' }; }
+  toast(j.ok ? '已恢复车机导出' : (j.msg || '恢复失败'));
+  await refreshAudioUsbStatus();
+}
 async function refreshAudio() {
+  refreshAudioUsbStatus();
   const j = await (await fetch('/api/audio', { cache: 'no-store' })).json();
   audioLibDir = j.dir || '';
   audioSel.clear();
@@ -10321,6 +10363,7 @@ async function setLock(name) {
   } catch (e) {
     if (msg) msg.textContent = '写入失败: ' + e;
   }
+  refreshAudioUsbStatus();
 }
 async function audioRenameSel() {
   if (audioSel.size !== 1) return;
@@ -10390,27 +10433,37 @@ function fmParentDir(d) {
   return i <= 0 ? '/archive' : s.slice(0, i);
 }
 function fmPathEdit() {
-  const bar = document.getElementById('fm-pathbar'), form = document.getElementById('fm-pathform');
-  if (!bar || !form) return;
-  bar.hidden = true;
-  form.hidden = false;
-  const input = document.getElementById('dest-dir');
-  input.value = curDir;
+  const crumb = document.getElementById('crumb');
+  if (!crumb || crumb.querySelector('.fm-pathinput')) return;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'fm-pathinput';
+  input.value = curDir || (area === 'archive' ? '/archive' : '/');
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.setAttribute('aria-label', '目录路径');
+  input.onkeydown = event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const dir = input.value;
+      fmPathCancel();
+      goDir(dir);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      fmPathCancel();
+    }
+  };
+  crumb.classList.add('editing');
+  crumb.appendChild(input);
   input.focus();
   input.select();
 }
 function fmPathCancel() {
-  const bar = document.getElementById('fm-pathbar'), form = document.getElementById('fm-pathform');
-  if (bar) bar.hidden = false;
-  if (form) form.hidden = true;
-}
-function fmPathSubmit(e) {
-  if (e) e.preventDefault();
-  const input = document.getElementById('dest-dir');
-  const v = input ? input.value : '';
-  fmPathCancel();
-  goDir(v);
-  return false;
+  const crumb = document.getElementById('crumb');
+  if (!crumb) return;
+  const input = crumb.querySelector('.fm-pathinput');
+  if (input) input.remove();
+  crumb.classList.remove('editing');
 }
 function fmPreview(path, name, isVideo) {
   const box = document.getElementById('fm-preview'), body = document.getElementById('fm-preview-body');
@@ -10829,7 +10882,6 @@ async function refreshFiles(dir) {
     nav.style.display = 'block';
   }
   curDir = area === 'usb' ? j.dir : j.virtual_dir;
-  document.getElementById('dest-dir').value = curDir;
   crumb.innerHTML = '';
   const mkLink = (label, target, folder) => {
     const a = document.createElement('a');
@@ -10940,7 +10992,6 @@ document.getElementById('anyfile-file').onchange = async function () {
   if (j && j.ok) refreshFiles();
 };
 
-injectSkin();
 applyLang();
 renderBright();
 refreshBrand();
@@ -11025,7 +11076,7 @@ def _move_children(src_dir, dst_dir):
 
 def ensure_dirs():
     for d in (VIDEO_ROOT, os.path.join(VIDEO_ROOT, "img"),
-              SKIN_DIR, AUDIO_Q, AUDIO_DONE, AUDIO_LIB, FILES_DIR, ARCHIVE, TRANSCODE_DIR):
+              AUDIO_Q, AUDIO_DONE, AUDIO_LIB, FILES_DIR, ARCHIVE, TRANSCODE_DIR):
         os.makedirs(d, exist_ok=True)
     for c in CATS:
         os.makedirs(os.path.join(ARCHIVE, c), exist_ok=True)
@@ -13603,15 +13654,6 @@ def log_report():
     return {"ok": True, "overview": ov, "detail": "\n".join(detail_lines)}
 
 
-def active_skin():
-    ap = os.path.join(SKIN_DIR, "active.json")
-    try:
-        with open(ap) as f:
-            return json.load(f).get("skin")
-    except Exception:
-        return None
-
-
 # ---------------- 多路合成导出 (ffmpeg) ----------------
 # F50 是 aarch64/OpenWrt，按版本用 apk/opkg 安装 ffmpeg 到 /usr/bin；
 # 不再优先使用来源不明的 aarch64 静态包。
@@ -13859,8 +13901,8 @@ def audio_write_now():
 
 def audio_set_lockchime(name):
     """把归档区音频库里的素材设为锁车音: mp3 先转 wav, 再按文件管理的方式
-    立即断开车机读取, 把 wav 直接写入车机U盘根目录 LockChime.wav (覆盖同名文件),
-    写完立即恢复车机导出。"""
+    立即断开车机读取, 把 wav 直接写入车机U盘根目录 LockChime.wav (覆盖同名文件)。
+    本次操作自己挂载时写完立即恢复车机导出; 已有管理连接保持不变。"""
     name = safe_name(name)
     src = os.path.join(AUDIO_LIB, name) if name else ""
     if not name or not os.path.isfile(src):
@@ -14352,14 +14394,13 @@ def _storage_wait_for_job(timeout=20.0):
 
 
 def _apply_storage_root(root, persist=True):
-    """切换运行中的视频存储根目录 (镜像 / 归档 / 转码 / 皮肤 / 队列一并跟随)。"""
-    global VIDEO_ROOT, IMG, ARCHIVE, SKIN_DIR, AUDIO_Q, AUDIO_DONE, AUDIO_LIB, FILES_DIR
+    """切换运行中的视频存储根目录 (镜像 / 归档 / 转码 / 队列一并跟随)。"""
+    global VIDEO_ROOT, IMG, ARCHIVE, AUDIO_Q, AUDIO_DONE, AUDIO_LIB, FILES_DIR
     global TRANSCODE_DIR, PRUNED_FILE, DRIVE_STATE
     root = (root or "").rstrip("/") or DEFAULT_VIDEO_ROOT
     VIDEO_ROOT = root
     IMG = os.path.join(root, "img", "teslacam.img")
     ARCHIVE = os.path.join(root, "archive")
-    SKIN_DIR = os.path.join(ARCHIVE, ".skins")
     AUDIO_Q = os.path.join(ARCHIVE, "boombox-queue")
     AUDIO_DONE = os.path.join(ARCHIVE, "boombox-done")
     AUDIO_LIB = os.path.join(ARCHIVE, "audio")
@@ -18160,10 +18201,10 @@ _NC_DEFAULT = {
     "media": "thumb", "quality": "480p", "vdur": 30,
     "channel": "feishu", "wx_enabled": False, "wx_api": "iyuu", "wx_token": "",
     "wx_format": "",
-    # Bark (iOS) 推送: Device Key + 分组/铃声/图标/截图, 标题与正文支持变量模板
+    # Bark (iOS) 推送: Device Key + 分组/铃声/通知级别/图标/截图, 标题与正文支持变量模板
     "bark_server": "https://api.day.app", "bark_key": "", "bark_group": "Tesla 哨兵",
-    "bark_sound": "", "bark_icon": "", "bark_img": True, "bark_title": "", "bark_body": "",
-    "bark_token": "",
+    "bark_sound": "", "bark_level": "active", "bark_icon": "", "bark_img": True,
+    "bark_title": "", "bark_body": "", "bark_token": "",
 }
 _TOK = {"v": "", "exp": 0}
 CAM_NUM = {0: "前视", 3: "左B柱", 4: "右B柱", 5: "左翼子板", 6: "右翼子板", 7: "后视"}
@@ -19247,15 +19288,92 @@ def _bark_ready(conf):
     return bool(str(conf.get("bark_key") or "").strip())
 
 
+BARK_TEST_EVENT = "__bark_virtual_test__"
+
+
+def _bark_virtual_meta():
+    """无真实录像时使用的测试事件, 不写归档, 也不会出现在事件列表。"""
+    return {"reason": "sentry_aware_object_detection", "camera": 0,
+            "timestamp": datetime.datetime.now().replace(microsecond=0).isoformat(),
+            "city": "虚拟测试位置", "street": "Bark 推送测试"}
+
+
+@lru_cache(maxsize=1)
+def _bark_virtual_image():
+    """用标准库生成 Bark 测试 PNG, 不依赖真实录像、ffmpeg 或额外图片文件。"""
+    w, h = 640, 360
+    pixels = bytearray(w * h * 3)
+
+    def rect(x0, y0, x1, y1, color):
+        x0, x1 = max(0, int(x0)), min(w, int(x1))
+        y0, y1 = max(0, int(y0)), min(h, int(y1))
+        if x1 <= x0 or y1 <= y0:
+            return
+        row = bytes(color) * (x1 - x0)
+        for yy in range(y0, y1):
+            start = (yy * w + x0) * 3
+            pixels[start:start + len(row)] = row
+
+    for y in range(h):
+        rect(0, y, w, y + 1, (15 + y * 5 // h, 23 + y * 7 // h, 34 + y * 10 // h))
+    red, line, white, muted = (232, 68, 63), (55, 68, 82), (244, 247, 250), (153, 173, 190)
+    rect(0, 0, w, 8, red)
+    rect(28, 28, w - 28, 30, line)
+    rect(28, h - 30, w - 28, h - 28, line)
+    rect(28, 28, 30, h - 28, line)
+    rect(w - 30, 28, w - 28, h - 28, line)
+    font = {
+        "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+        "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
+        "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
+        "I": ("11111", "00100", "00100", "00100", "00100", "00100", "11111"),
+        "K": ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
+        "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
+        "N": ("10001", "11001", "11001", "10101", "10011", "10011", "10001"),
+        "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
+        "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
+        "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
+        "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
+        "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
+        "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
+    }
+
+    def text(value, x, y, scale, color):
+        for ch in value:
+            glyph = font.get(ch)
+            if glyph:
+                for gy, bits in enumerate(glyph):
+                    for gx, bit in enumerate(bits):
+                        if bit == "1":
+                            rect(x + gx * scale, y + gy * scale,
+                                 x + (gx + 1) * scale, y + (gy + 1) * scale, color)
+            x += 6 * scale
+
+    text("BARK TEST", 108, 90, 8, white)
+    rect(108, 168, 532, 172, red)
+    text("VIRTUAL SENTRY EVENT", 82, 198, 4, muted)
+    rect(286, 270, 354, 274, muted)
+
+    def chunk(kind, data):
+        return (struct.pack("!I", len(data)) + kind + data
+                + struct.pack("!I", zlib.crc32(kind + data) & 0xffffffff))
+
+    raw = b"".join(b"\x00" + bytes(pixels[y * w * 3:(y + 1) * w * 3]) for y in range(h))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack("!IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b""))
+
+
 def _bark_text(conf, cat, name, test=False):
     """按 Bark 的标题/正文模板拼文字; 支持 {类型}{时间}{位置}{原因}{分类}{摄像头}。"""
     d = os.path.join(ARCHIVE, cat, name)
-    meta = {}
-    try:
-        with open(os.path.join(d, "event.json"), encoding="utf-8", errors="ignore") as f:
-            meta = json.load(f) or {}
-    except Exception:
-        pass
+    meta = _bark_virtual_meta() if test and name == BARK_TEST_EVENT else {}
+    if not meta:
+        try:
+            with open(os.path.join(d, "event.json"), encoding="utf-8", errors="ignore") as f:
+                meta = json.load(f) or {}
+        except Exception:
+            pass
     cat_name, _color, detail = _reason_info(meta.get("reason"))
     if cat == "SavedClips" and not str(meta.get("reason", "")).startswith("sentry_"):
         cat_name = "手动保存"
@@ -19294,6 +19412,8 @@ def _bark_cover_url(conf, cat, name):
     token = str(conf.get("bark_token") or "").strip()
     if not base or not token:
         return ""
+    if name == BARK_TEST_EVENT:
+        return "%s/api/notify/bark/test-cover.png?token=%s" % (base, urllib.parse.quote(token))
     return "%s/api/notify/bark/cover.jpg?token=%s&cat=%s&name=%s" % (
         base, urllib.parse.quote(token), urllib.parse.quote(cat), urllib.parse.quote(name))
 
@@ -19307,22 +19427,27 @@ def _bark_send(conf, cat, name, test=False):
     if not re.match(r"^https?://", server, re.I):
         server = "https://" + server
     title, body, _meta = _bark_text(conf, cat, name, test)
+    level = str(conf.get("bark_level") or "active").strip()
+    if level not in ("active", "timeSensitive", "passive", "critical"):
+        level = "active"
     payload = {"device_key": key, "title": title, "body": body,
-               "group": str(conf.get("bark_group") or "Tesla 哨兵").strip() or "Tesla 哨兵"}
+               "group": str(conf.get("bark_group") or "Tesla 哨兵").strip() or "Tesla 哨兵",
+               "level": level}
     if str(conf.get("bark_sound") or "").strip():
         payload["sound"] = str(conf["bark_sound"]).strip()
     if str(conf.get("bark_icon") or "").strip():
         payload["icon"] = str(conf["bark_icon"]).strip()
     base = _cover_base(conf)
     if base:
-        payload["url"] = "%s/?ev=%s/%s" % (base, urllib.parse.quote(cat), urllib.parse.quote(name))
-    warn = ""
+        payload["url"] = (base + "/" if test and name == BARK_TEST_EVENT else
+                          "%s/?ev=%s/%s" % (base, urllib.parse.quote(cat), urllib.parse.quote(name)))
+    warn = " (无真实事件, 已使用虚拟测试事件)" if test and name == BARK_TEST_EVENT else ""
     if conf.get("bark_img", True):
         img = _bark_cover_url(conf, cat, name)
         if img:
             payload["image"] = img          # Bark 在手机上按这个 URL 下载触发截图
         else:
-            warn = " (还没有可用的访问地址或截图令牌, 截图未附带)"
+            warn += " (还没有可用的访问地址或截图令牌, 截图未附带)"
     try:
         j = _post_json(server + "/push", payload, timeout=20, tls12=False)
     except Exception as ex:
@@ -19535,6 +19660,7 @@ def notify_status():
         "bark_server": conf.get("bark_server") or "https://api.day.app",
         "bark_group": conf.get("bark_group") or "Tesla 哨兵",
         "bark_sound": conf.get("bark_sound") or "",
+        "bark_level": conf.get("bark_level") or "active",
         "bark_icon": conf.get("bark_icon") or "",
         "bark_img": bool(conf.get("bark_img", True)),
         "bark_title": conf.get("bark_title") or "",
@@ -22349,7 +22475,8 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if path in ("/api/notify/bark/cover", "/api/notify/bark/cover.jpg"):
+        if path in ("/api/notify/bark/cover", "/api/notify/bark/cover.jpg",
+                    "/api/notify/bark/test-cover.png"):
             # Bark 在手机上按 URL 下载通知图片, 因此这里必须免登录; 用随机 token 防止被随意遍历。
             # 同时提供 .jpg 后缀, 兼容按扩展名判断图片类型的客户端。
             q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -22357,6 +22484,9 @@ class Handler(BaseHTTPRequestHandler):
             token = str(conf.get("bark_token") or "")
             if not token or not hmac.compare_digest(str(q.get("token", [""])[0]), token):
                 self._send(404, b"not found")
+                return
+            if path == "/api/notify/bark/test-cover.png":
+                self._send(200, _bark_virtual_image(), "image/png")
                 return
             cat = q.get("cat", [""])[0]
             name = q.get("name", [""])[0]
@@ -22679,28 +22809,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "public, max-age=86400")
             self.end_headers()
             self.wfile.write(data)
-        elif path == "/api/skins":
-            skins = sorted(f for f in os.listdir(SKIN_DIR)
-                           if f != "active.json" and os.path.isfile(os.path.join(SKIN_DIR, f)))
-            self._json({"skins": skins, "active": active_skin()})
-        elif path == "/api/skin":
-            s = active_skin()
-            if s and s.endswith(".css") and os.path.isfile(os.path.join(SKIN_DIR, s)):
-                with open(os.path.join(SKIN_DIR, s), "rb") as f:
-                    self._send(200, f.read(), "text/css; charset=utf-8")
-            else:
-                self._send(204, b"", "text/css")
-        elif path.startswith("/skin-media/"):
-            fn = safe_name(path[len("/skin-media/"):])
-            fp = os.path.join(SKIN_DIR, fn) if fn else ""
-            if fn and os.path.isfile(fp):
-                ext = fn.rsplit(".", 1)[-1].lower()
-                ct = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-                      "webp": "image/webp", "css": "text/css"}.get(ext, "application/octet-stream")
-                with open(fp, "rb") as f:
-                    self._send(200, f.read(), ct)
-            else:
-                self._send(404, b"not found")
         elif path == "/api/audio":
             try:
                 os.makedirs(AUDIO_LIB, exist_ok=True)
@@ -23199,7 +23307,7 @@ class Handler(BaseHTTPRequestHandler):
                     patch[k] = bool(body.get(k))
             for k in ("mode", "media", "quality", "webhook", "app_id", "receive_id",
                       "receive_id_type", "public_url", "wx_api", "channel",
-                      "bark_server", "bark_group", "bark_sound", "bark_icon",
+                      "bark_server", "bark_group", "bark_sound", "bark_level", "bark_icon",
                       "bark_title", "bark_body"):
                 if k in body:
                     patch[k] = str(body.get(k) or "").strip()
@@ -23227,6 +23335,11 @@ class Handler(BaseHTTPRequestHandler):
                 patch.pop("quality", None)
             if str(patch.get("media") or "") not in ("thumb", "video"):
                 patch.pop("media", None)
+            if "bark_sound" in patch:
+                patch["bark_sound"] = patch["bark_sound"][:80]
+            if "bark_level" in patch and patch["bark_level"] not in (
+                    "active", "timeSensitive", "passive", "critical"):
+                patch.pop("bark_level", None)
             if "bark_title" in patch:
                 patch["bark_title"] = patch["bark_title"][:160]
             if "bark_body" in patch:
@@ -23267,8 +23380,10 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
             if not name:
-                self._json({"ok": False, "msg": "归档里还没有哨兵事件, 无法生成测试卡片"}, 400)
-                return
+                if _notify_channel(notify_conf()) != "bark":
+                    self._json({"ok": False, "msg": "归档里还没有哨兵事件, 无法生成测试卡片"}, 400)
+                    return
+                name = BARK_TEST_EVENT
             ok, msg = notify_push(cat, name, test=True)
             self._json({"ok": ok, "msg": msg})
             return
@@ -23345,7 +23460,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "msg": "参数错误"}, 400)
                 return
             st = str(body.get("style") or "")
-            if st not in ("default", "apple", "claude", "pixel"):
+            if st not in ("default", "pixel"):
                 self._json({"ok": False, "msg": "参数错误"}, 400)
                 return
             save_settings({"ui_style": st})
@@ -23572,23 +23687,6 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             self._json({"ok": True})
             return
-        if path == "/api/upload/skin":
-            fn, data, _f = self._read_upload()
-            if fn == "TOOBIG":
-                self._json({"ok": False, "msg": "文件超过 3MB"}, 400)
-                return
-            fn = safe_name(fn)
-            if not fn or not data or not fn.lower().endswith((".css", ".jpg", ".jpeg", ".png", ".webp")):
-                self._json({"ok": False, "msg": "仅支持 css/jpg/png/webp"}, 400)
-                return
-            with open(os.path.join(SKIN_DIR, fn), "wb") as f:
-                f.write(data)
-            activated = False
-            if fn.endswith(".css"):
-                with open(os.path.join(SKIN_DIR, "active.json"), "w") as f:
-                    json.dump({"skin": fn}, f)
-                activated = True
-            self._json({"ok": True, "msg": ("皮肤已上传并应用" if activated else "图片已上传, 请在 CSS 中用 /skin-media/" + fn), "activated": activated})
         elif path == "/api/brand/name":
             body = self._read_json()
             if body == "TOOBIG" or not isinstance(body, dict):
@@ -23707,18 +23805,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(dict(ok=False, msg=str(exc) if isinstance(exc, ValueError) else '上传失败'), 409)
                 return
             self._json({"ok": True, "msg": f"已上传到 {dest_dir}/{fn} ({len(data)//1024} KB)"})
-        elif path == "/api/skin/activate":
-            body = self._read_json()
-            if body == "TOOBIG":
-                self._json({"ok": False, "msg": "请求体过大 (上限 1MB)"}, 413)
-                return
-            name = safe_name(body.get("name") if isinstance(body, dict) else None)
-            if name and os.path.isfile(os.path.join(SKIN_DIR, name)):
-                with open(os.path.join(SKIN_DIR, "active.json"), "w") as f:
-                    json.dump({"skin": name}, f)
-                self._json({"ok": True})
-            else:
-                self._json({"ok": False, "msg": "皮肤不存在"}, 404)
         elif path == "/api/audio/write":
             self._read_json()   # 读掉请求体, 避免 keep-alive 连接上残留数据影响下一个请求
             try:
@@ -23765,17 +23851,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._gate():
             return
         path = urllib.parse.unquote(self.path)
-        if path.startswith("/api/skin/"):
-            name = safe_name(path[len("/api/skin/"):])
-            fp = os.path.join(SKIN_DIR, name) if name else ""
-            if name and os.path.isfile(fp):
-                os.remove(fp)
-                if active_skin() == name:
-                    os.remove(os.path.join(SKIN_DIR, "active.json"))
-                self._json({"ok": True})
-            else:
-                self._json({"ok": False, "msg": "not found"}, 404)
-        elif path.startswith("/api/audio/"):
+        if path.startswith("/api/audio/"):
             name = safe_name(path[len("/api/audio/"):].split("?")[0])
             fp = os.path.join(AUDIO_LIB, name) if name else ""
             if name and os.path.isfile(fp):

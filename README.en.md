@@ -1,16 +1,16 @@
-# Tesla Sentry Drive · 特斯拉哨兵云盘
+# Tesla Cloud Sentry · ZTE F50 Optimized Edition
 
 [中文](README.md) | **English**
 
-**A virtual Sentry USB drive · multi-camera synchronized playback · SEI driving telemetry · watermarked export — optimized exclusively for the ZTE F50.**
+**Chinese name: 特斯拉云哨兵·中兴F50优化专版. A virtual Sentry USB drive · multi-camera synchronized playback · SEI driving telemetry · watermarked export — optimized for the ZTE F50 and F50 Storage Edition.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
 [![Zero third-party deps](https://img.shields.io/badge/deps-zero-brightgreen.svg)](#features)
 
-Plug a **ZTE F50 storage edition** into the glovebox USB port instead of the factory USB drive: the car keeps recording as usual, and you open a web page over the F50 Wi-Fi to review 4 / 6 synchronized camera angles, read SEI telemetry frame by frame, and export clips with a driving-info watermark.
+Plug a **ZTE F50 or F50 Storage Edition** into the glovebox USB port instead of the factory USB drive: the car keeps recording as usual, and you open a web page over the F50 Wi-Fi to review 4 / 6 synchronized camera angles, read SEI telemetry frame by frame, and export clips with a driving-info watermark.
 
-This project supports only the ZTE F50. Other travel routers, development boards, NAS devices, x86 machines and generic Linux deployment modes are no longer supported · [deployment overview](docs/overview.png)
+This project supports only the ZTE F50 and F50 Storage Edition. Other travel routers, development boards, NAS devices, x86 machines and generic Linux deployment modes are not supported · [deployment overview](docs/overview.png)
 
 ---
 
@@ -32,7 +32,7 @@ This project supports only the ZTE F50. Other travel routers, development boards
 | 🔔 Push | Pick Feishu, WeChat or Bark reminders from a dropdown. Feishu supports direct messages (self only) or a group bot webhook; WeChat supports iyuu.cn and Server酱; Bark supports iOS notifications with group / sound / icon and the trigger screenshot, plus title/body templates and a live style preview. Sends the trigger-frame cover card or a short clip starting 5 seconds before the trigger, optionally with the driving watermark burned in. Deduplicated, 20-second delay, 3 retries on failure. The export sheet can push too. |
 | 🔐 Login protection | `install.sh` generates a random 10-character password (user `admin`) by default. HMAC-signed cookie valid for 30 days plus HTTP Basic. 8 wrong attempts from one IP within 10 minutes returns 429. Settings → Account lets you change the password or sign out. |
 | 🔄 Online update | Multiple sources raced in parallel with a GitHub API fallback; the main file and its local modules are downloaded, self-checked and installed together → backup → atomic swap → restart → 150-second health probe that automatically reverts to the previous version if the new one does not come up, plus one-click rollback. Settings → Update has an **auto-update** toggle (on by default: upgrades when a new version appears and nobody is watching). |
-| 🎨 Personalization | Custom title icon and name (defaults to 「哨兵一剪梅」), dark / light / auto theme, 4 UI styles (Default / Apple / Claude / Pixel), 10 UI languages, background skins, lock chime (`LockChime.wav`), wraps `Wraps/`. |
+| 🎨 Personalization | Custom title icon and name (defaults to 「哨兵一剪梅」), dark / light / auto theme, 2 UI styles (Default / Pixel), 10 UI languages, lock chime (`LockChime.wav`), wraps `Wraps/`. |
 | 🛡 Robustness | Journaled ext4 archive, boot-time self-check, service auto-restart, automatic LUN re-attach via `*/2` cron after eject, recovery from power loss. |
 
 > 📢 **Changelog**: highlights of the major releases after 2.3 (instant playback / thermals / no-format first setup / export watermark / security & OTA) are in [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md).
@@ -41,7 +41,7 @@ This project supports only the ZTE F50. Other travel routers, development boards
 
 ## Supported devices
 
-**Only the ZTE F50 storage edition is supported.** Verified configuration: Unisoc T760 / aarch64 / 1.4G RAM / 256G eMMC, OpenWrt 25.12.5, kernel 7.2.9 and `25100000.dwc3`, with a 2022 Model Y (4 cameras); newer 6-camera recordings are supported too.
+**Only the ZTE F50 and F50 Storage Edition are supported.** The verified F50 Storage Edition configuration is Unisoc T760 / aarch64 / 1.4G RAM / 256G eMMC, OpenWrt 25.12.5, kernel 7.2.9 and `25100000.dwc3`, with a 2022 Model Y (4 cameras); newer 6-camera recordings are supported too.
 
 Requirements: F50 OpenWrt with procd, USB Gadget / configfs, kernel exFAT, loop / losetup, root and Python 3.11+. A TF card is recommended for the image and archive. ffmpeg / ffprobe provide thumbnails, transcoding and watermarked exports.
 
@@ -111,11 +111,11 @@ The old `--size-gb` / `--archive-gb` / `--drive-gb` flags are still accepted for
 
 ## Backend optimizations (performance · loading · disk)
 
-Tuned for the F50's 1.4G RAM, fanless chassis and 4G uplink:
+Tuned for the F50's 1.4G RAM, fanless chassis and 5G uplink:
 
 - **Instant playback**: if the requested quality is not transcoded yet, `/media` serves the first frame or an existing lower variant immediately and transcodes in the background. Playback prefers `faststart` outputs, cutting first-frame time from 3–6s to ~0.3s.
 - **Chunked transcode + cache**: previews are generated per second and cached; the cache version is embedded in filenames so a parameter change invalidates old files automatically.
-- **10s start buffer + 20–25s read-ahead**: smooths 4G playback; long-press 3× fast-forward uses a global rate override that the playback loop no longer resets every frame.
+- **10s start buffer + 20–25s read-ahead**: smooths playback over the 5G uplink; long-press 3× fast-forward uses a global rate override that the playback loop no longer resets every frame.
 - **Thumbnail concurrency limit**: thumbnails and push covers share a disk cache and a bounded ffmpeg pool, so opening dozens of events cannot starve the device.
 - **Transcode profiles**: 720p/480p/360p at 1500/900/520 kbps with relaxed peak/buffer, much less blocking in motion; pre-transcode only the newest N events and only while nobody is watching.
 - **Sparse exFAT image**: the virtual USB drive is a sparse image charged by real writes, exported via USB Gadget `mass_storage`; the archive lives on a separate ext4 filesystem so car writes and archive reads do not fight for I/O.
