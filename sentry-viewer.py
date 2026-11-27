@@ -539,11 +539,11 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.004"
+APP_VERSION = "2026.11.28.005"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
-OTA_DEFAULT_BRANCH = "main"
+OTA_DEFAULT_BRANCH = "F50"
 OTA_BACKUP = os.environ.get("TSF_OTA_BACKUP", "/opt/tesla-sentry/sentry-viewer.bak.py")
 OTA_STATE = os.environ.get("TSF_OTA_STATE", "/opt/tesla-sentry/ota-state.json")
 OTA_TARGET = os.path.join(os.path.dirname(OTA_STATE) or ".", "ota-target.json")
@@ -566,6 +566,8 @@ def ota_target():
         branch = branch or str(j.get("branch") or "").strip()
     except Exception:
         pass
+    if branch == "main":   # 旧版默认分支, 仓库已把 main 改名为 F50
+        branch = OTA_DEFAULT_BRANCH
     _OTA_TGT.update({"repo": OTA_DEFAULT_REPO, "branch": branch or OTA_DEFAULT_BRANCH})
     return _OTA_TGT
 
@@ -4327,7 +4329,7 @@ body.settings-open { overflow:hidden; }
     <div class="updnotes-wrap" id="upd-notes-wrap" style="display:none">
       <div class="updnotes-title">更新记录<span>仅显示最近 3 个版本</span></div>
       <div class="updnotes" id="upd-notes"></div>
-      <a class="updmore" id="upd-more" href="https://github.com/jiaoting/tesla-sentry-f50/blob/main/docs/RELEASE-NOTES.md" target="_blank" rel="noopener">查看完整更新记录 →</a>
+      <a class="updmore" id="upd-more" href="https://github.com/jiaoting/tesla-sentry-f50/blob/F50/docs/RELEASE-NOTES.md" target="_blank" rel="noopener">查看完整更新记录 →</a>
     </div>
     <div class="hint">升级会从 GitHub 及多个镜像并发竞速拉取最新程序, 覆盖本机文件并自动重启服务 (约5秒); 配置、录像、登录信息不受影响。</div>
     <div class="updbtns updrollback"><button class="mini" id="upd-rb" onclick="otaRollback()" style="display:none">↩ 回滚到上一版本</button></div>
@@ -9842,7 +9844,7 @@ async function userSave() {
 let otaInfo = null;
 let otaRecheckTimer = 0, otaCheckSeq = 0;
 function esc(s) { return String(s == null ? '' : s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
-const OTA_BRANCHES = ['main', 'master', 'dev'];
+const OTA_BRANCHES = ['F50', 'master', 'dev'];
 let otaRepoFixed = 'jiaoting/tesla-sentry-f50';
 async function otaLoadTarget() {
   try {
@@ -9855,7 +9857,7 @@ async function otaLoadTarget() {
     if (j.branch && branches.indexOf(j.branch) < 0) branches.push(j.branch);
     b.innerHTML = branches.map(x => '<option value="' + esc(x) + '">' + esc(x) + '</option>').join('')
       + '<option value="__custom__">自定义分支…</option>';
-    b.value = j.branch || 'main';
+    b.value = j.branch || 'F50';
     const bc = document.getElementById('upd-branch-custom');
     bc.value = ''; bc.style.display = 'none';
   } catch (e) {}
@@ -9931,7 +9933,7 @@ async function otaCheck(force, silent) {
       if (wrap) wrap.style.display = '';
       const more = document.getElementById('upd-more');
       if (more) more.href = 'https://github.com/' + (j.repo || 'jiaoting/tesla-sentry-f50') +
-        '/blob/' + encodeURIComponent(j.branch || 'main') + '/docs/RELEASE-NOTES.md';
+        '/blob/' + encodeURIComponent(j.branch || 'F50') + '/docs/RELEASE-NOTES.md';
     } else {
       n.style.display = 'none'; n.innerHTML = '';
       if (wrap) wrap.style.display = 'none';

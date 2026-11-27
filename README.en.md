@@ -182,18 +182,18 @@ On mainland networks `raw.githubusercontent.com` and the jsDelivr endpoints are 
 - Errors list every failed source with its reason (timeout / connection blocked / certificate tampered / DNS failure), so you can tell a firewall problem from a dead mirror at a glance;
 - Auto-update is on by default: after the network recovers it retries every 5 minutes and upgrades automatically, no manual clicking.
 
-To add your own source, put a working mirror in the config (comma-separated, in the form `https://domain/<repo-path>/main`):
+To add your own source, put a working mirror in the config (comma-separated, in the form `https://domain/<repo-path>/F50`):
 
 ```bash
-echo 'TSF_OTA_SOURCES=https://ghfast.top/https://raw.githubusercontent.com/jiaoting/tesla-sentry-f50/main,https://gcore.jsdelivr.net/gh/jiaoting/tesla-sentry-f50@main' >> /etc/tesla-sentry.conf
+echo 'TSF_OTA_SOURCES=https://ghfast.top/https://raw.githubusercontent.com/jiaoting/tesla-sentry-f50/F50,https://gcore.jsdelivr.net/gh/jiaoting/tesla-sentry-f50@F50' >> /etc/tesla-sentry.conf
 /etc/init.d/tesla-viewer restart
 ```
 
 **On old versions (2.8.12 and earlier) where even the check fails and the update page is unreachable**, overwrite the program manually once on the device; automatic updates resume afterwards:
 
 ```bash
-wget -O /tmp/sv.py https://ghfast.top/https://raw.githubusercontent.com/jiaoting/tesla-sentry-f50/main/sentry-viewer.py \
-  || wget -O /tmp/sv.py https://gcore.jsdelivr.net/gh/jiaoting/tesla-sentry-f50@main/sentry-viewer.py
+wget -O /tmp/sv.py https://ghfast.top/https://raw.githubusercontent.com/jiaoting/tesla-sentry-f50/F50/sentry-viewer.py \
+  || wget -O /tmp/sv.py https://gcore.jsdelivr.net/gh/jiaoting/tesla-sentry-f50@F50/sentry-viewer.py
 python3 -m py_compile /tmp/sv.py && cp /tmp/sv.py /opt/tesla-sentry/sentry-viewer.py \
   && chmod 755 /opt/tesla-sentry/sentry-viewer.py && /etc/init.d/tesla-viewer restart
 ```

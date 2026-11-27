@@ -220,13 +220,13 @@ OTA、推送、认证参数不写入此 conf，走环境变量或网页配置。
 - **存储分配填 0**：归档区总上限填 0 = 不设上限，仅磁盘空闲低于保护线时从最旧清起；驾驶记录上限仍须 ≥1。
 - **检查更新失败（连不上 GitHub）**：内置多源并发竞速，任一可用即通；报错会列出各源失败原因。可自行追加镜像源：
   ```bash
-  echo 'TSF_OTA_SOURCES=https://ghfast.top/https://raw.githubusercontent.com/jiaoting/tesla-sentry-f50/main,https://gcore.jsdelivr.net/gh/jiaoting/tesla-sentry-f50@main' >> /etc/tesla-sentry.conf
+  echo 'TSF_OTA_SOURCES=https://ghfast.top/https://raw.githubusercontent.com/jiaoting/tesla-sentry-f50/F50,https://gcore.jsdelivr.net/gh/jiaoting/tesla-sentry-f50@F50' >> /etc/tesla-sentry.conf
   /etc/init.d/tesla-viewer restart
   ```
   老版本连检查都失败时，手动覆盖一次主程序即可回到自动更新：
   ```bash
-  wget -O /tmp/sv.py https://ghfast.top/https://raw.githubusercontent.com/jiaoting/tesla-sentry-f50/main/sentry-viewer.py \
-    || wget -O /tmp/sv.py https://gcore.jsdelivr.net/gh/jiaoting/tesla-sentry-f50@main/sentry-viewer.py
+  wget -O /tmp/sv.py https://ghfast.top/https://raw.githubusercontent.com/jiaoting/tesla-sentry-f50/F50/sentry-viewer.py \
+    || wget -O /tmp/sv.py https://gcore.jsdelivr.net/gh/jiaoting/tesla-sentry-f50@F50/sentry-viewer.py
   python3 -m py_compile /tmp/sv.py && cp /tmp/sv.py /opt/tesla-sentry/sentry-viewer.py \
     && chmod 755 /opt/tesla-sentry/sentry-viewer.py && /etc/init.d/tesla-viewer restart
   ```
