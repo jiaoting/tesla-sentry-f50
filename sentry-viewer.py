@@ -539,7 +539,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.005"
+APP_VERSION = "2026.11.28.006"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -3948,7 +3948,7 @@ body.settings-open { overflow:hidden; }
     <div class="hint card-gate-note" id="card-gate-note" role="status" hidden>外置卡未检测到或未挂载：车机 U 盘容量设定、格式化、归档区设定、同步管理与一键迁移已暂停。请先在上方「外置卡管理」中挂载外置卡。</div>
     <div class="storage-columns"><section class="storage-quota"><h3>归档区容量设置</h3>
     <div class="storage-row cap"><div class="cap-label"><label for="storage-archive">归档区总上限</label><span class="cap-note" id="archive-limit-note" hidden></span><span class="cap-note" id="storage-budget" role="status"></span></div><input class="ninput" id="storage-archive" type="number" min="0" step="1" inputmode="numeric"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="归档总上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="archive">?</button></div>
-    <div class="storage-nested"><div class="storage-row cap"><label for="storage-drive">其中：驾驶记录上限</label><input class="ninput" id="storage-drive" type="number" min="1" step="1" inputmode="numeric"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="驾驶记录上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="drive">?</button></div><div class="storage-row cap"><label for="retention-recentmax">其中：实时滚动记录上限</label><input class="ninput" id="retention-recentmax" type="number" min="0" max="4096" step="1" inputmode="numeric"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="实时滚动记录上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="recentmax">?</button></div>
+    <div class="storage-nested"><div class="storage-row cap"><label for="storage-drive">其中：驾驶记录上限</label><input class="ninput" id="storage-drive" type="number" min="1" step="1" inputmode="numeric" value="12"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="驾驶记录上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="drive">?</button></div><div class="storage-row cap"><label for="retention-recentmax">其中：实时滚动记录上限</label><input class="ninput" id="retention-recentmax" type="number" min="0" max="4096" step="1" inputmode="numeric" value="12"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="实时滚动记录上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="recentmax">?</button></div>
     <div class="storage-row cap"><label for="storage-sentry">其中：哨兵上限</label><input class="ninput" id="storage-sentry" type="number" min="0" max="4096" step="1" inputmode="numeric"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="哨兵录像上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="sentrymax">?</button></div>
     <div class="storage-row cap"><label for="storage-saved">其中：手动保存上限</label><input class="ninput" id="storage-saved" type="number" min="0" max="4096" step="1" inputmode="numeric"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="手动保存上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="savedmax">?</button></div>
     <div class="storage-row cap"><label for="storage-cache">其中：转码缓存上限</label><input class="ninput" id="storage-cache" type="number" min="1" max="64" step="1" inputmode="numeric"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="转码缓存上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="cachemax">?</button></div></div>
@@ -8479,8 +8479,10 @@ function storageRenderUsage() {
   const reserveGb = inputNum('storage-reserve', values.free_target_gib);
   const availableArchive = Math.max(0, cardGb - usbLimit - reserveGb);
   // 「不限制」时上限位显示最多可分配的容量, 例如「12.3 / 140.0 G（无限制）」
+  // 归档总上限有值时, 嵌套项目的「最多」也不能超过归档总上限
+  const archiveCapGb = archiveLimit > 0 ? Math.min(archiveLimit, availableArchive) : availableArchive;
   const capLabel = (limit) => limit > 0 ? limit + ' G'
-    : (Math.round(availableArchive * 10) / 10).toFixed(1) + ' G（' + t('无限制') + '）';
+    : (Math.round(archiveCapGb * 10) / 10).toFixed(1) + ' G（' + t('无限制') + '）';
   // 实际用量的限额文字与容量条都读容量设置输入框, 改上限时同步变化
   for (const [name, used, limit] of [['usb', disk.usb_used_bytes, usbLimit], ['archive', disk.archive_bytes, archiveLimit], ['drive', disk.drive_bytes, driveLimit], ['recent', disk.recent_bytes, recentLimit], ['sentry', disk.sentry_bytes, sentryLimit], ['saved', disk.saved_bytes, savedLimit], ['cache', disk.cache_bytes, cacheLimit]]) {
     const notReady = name === 'usb' && disk.usb_ready === false;
@@ -8488,8 +8490,10 @@ function storageRenderUsage() {
     document.getElementById('storage-used-' + name).textContent = amount + ' / ' + capLabel(limit);
     const meter = document.getElementById('storage-meter-' + name);
     if (!meter) continue;
-    meter.hidden = notReady || used == null || !(limit > 0);
-    meter.value = limit > 0 && used != null ? Math.min(100, used / G / limit * 100) : 0;
+    // 无限制也画进度条: 以归档可用上限为基准, 让用户直观看到已用占整卡可分配空间的比例
+    const base = limit > 0 ? limit : archiveCapGb;
+    meter.hidden = notReady || used == null || !(base > 0);
+    meter.value = base > 0 && used != null ? Math.min(100, used / G / base * 100) : 0;
   }
   document.getElementById('storage-used-free').textContent = (disk.free_bytes / G).toFixed(1) + ' G';
   const otherOutput = document.getElementById('storage-used-other');
