@@ -31,7 +31,6 @@ import select
 import http.client
 import ssl
 import zipfile
-import zlib
 import tempfile
 import sys
 import fcntl
@@ -2687,6 +2686,18 @@ select.ninput { cursor:pointer; }
 .fm-pathbar #crumb.editing { display:flex; }
 .fm-pathbar #crumb.editing > :not(.fm-pathinput) { display:none; }
 .fm-pathinput { flex:1; width:100%; min-width:0; background:var(--bg); border:1px solid var(--line2); border-radius:8px; color:var(--text); padding:4px 8px; font:inherit; outline:none; }
+.usb-panel { border:1px solid; border-radius:10px; padding:12px 14px; font-size:12.5px; line-height:1.6; }
+.usb-panel.disconnected { background:var(--amberbg); border-color:var(--amberline); color:var(--amber); }
+.usb-panel.connected { background:rgba(76,195,138,.1); border-color:rgba(76,195,138,.32); color:#4cc38a; }
+.usb-panel.busy { background:rgba(60,145,190,.1); border-color:rgba(60,145,190,.32); color:#7cc7f0; }
+.usb-panel-title { font-weight:600; }
+.usb-panel-detail { margin-top:2px; color:var(--muted2); font-size:11.5px; overflow-wrap:anywhere; }
+.usb-panel-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+.usb-panel-btn { flex:1 1 160px; min-height:38px; padding:8px 14px; border:1px solid transparent; border-radius:8px;
+  font-size:12.5px; font-weight:600; cursor:pointer; }
+.usb-panel-btn.primary { background:var(--accent); color:#fff; }
+.usb-panel-btn.secondary { background:var(--panel2); border-color:var(--line2); color:var(--text); }
+.usb-panel-btn:disabled { opacity:.55; cursor:default; }
 .fm-listhead { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:0 12px 7px; font-size:11.5px; color:var(--muted); }
 .fm-listhead .fm-allwrap { display:flex; align-items:center; gap:6px; cursor:pointer; }
 .fm-listhead input[type=checkbox] { width:17px; height:17px; accent-color:var(--accent); cursor:pointer; }
@@ -3467,6 +3478,11 @@ body.settings-open { overflow:hidden; }
   .storwrap { margin-bottom:20px; }
   .storcard { gap:12px; padding:12px 36px 12px 12px; }
   .storcard #live { flex-basis:100%; max-width:none; }
+  .storcard.open .storage-brief { display:flex; flex:1 1 100%; flex-direction:column; align-items:stretch; gap:6px; width:100%; }
+  .storcard.open .storage-brief .storrow { display:contents; }
+  .storcard.open .storage-brief .storlab { order:1; }
+  .storcard.open .storage-brief .storbar { order:2; flex:none; width:100%; margin:0; }
+  .storcard.open .storage-brief .storval { order:3; text-align:left; white-space:normal; line-height:1.4; }
   .stortog { top:8px; }
   .library-toolbar h2 { font-size:20px; }
   .library-filters { gap:8px; flex-wrap:wrap; }
@@ -3996,7 +4012,7 @@ body.settings-open { overflow:hidden; }
   </div>
   <div id="tab-audio" style="display:none">
     <div class="hint">上传的音频先保存到归档区 <b>audio/</b> 目录，可上传多个用于筛选。格式仅 wav / mp3，单个 &lt;1MB；未连接车机U盘时，点「设为锁车声音」会自动连接并写入根目录 LockChime.wav（mp3 自动转 wav，覆盖同名文件），写完自动恢复车机导出；手动连接后则保持管理状态，可点「恢复车机导出」。</div>
-    <div id="audio-usb-status" style="margin-bottom:10px"></div>
+    <div id="audio-usb-status" style="margin-bottom:10px" aria-live="polite"></div>
     <div class="tool-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <label class="fm-tool upbtn accent-up" style="margin:0"><svg class="ic"><use href="#i-upload"/></svg>上传音频 (wav/mp3, &lt;1MB)<input type="file" id="audio-file" accept=".wav,.mp3" hidden multiple></label>
       <button class="mini" id="audio-rename-btn" onclick="audioRenameSel()" disabled>重命名</button>
@@ -4013,7 +4029,7 @@ body.settings-open { overflow:hidden; }
   </div>
   <div id="tab-wraps" style="display:none">
     <div class="hint">车机车辆涂装/牌照图片: 仅支持 PNG, 直接写入车机U盘根目录 Wraps/ (车机端设置里选)。首次上传会自动创建 Wraps 目录。连接时会临时断开车机读取几秒, 用完点「恢复车机导出」; 5 分钟无操作也会自动恢复。</div>
-    <div id="wraps-status" style="margin-bottom:10px"></div>
+    <div id="wraps-status" style="margin-bottom:10px" aria-live="polite"></div>
     <label class="fm-tool upbtn accent-up" id="wraps-upbtn"><svg class="ic"><use href="#i-upload"/></svg>上传涂装图片到 Wraps/ (仅 PNG, ≤100MB)<input type="file" id="wraps-file" accept=".png" hidden multiple></label>
     <div id="wraps-grid" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px"></div>
   </div>
@@ -4022,11 +4038,7 @@ body.settings-open { overflow:hidden; }
       <button id="area-usb" class="stab active" style="flex:1" onclick="switchArea('usb')"><svg class="ic"><use href="#i-usb"/></svg>车机U盘</button>
       <button id="area-archive" class="stab" style="flex:1" onclick="switchArea('archive')"><svg class="ic"><use href="#i-archive"/></svg>归档区</button>
     </div>
-    <div id="usb-status" style="display:none;margin-bottom:10px"></div>
-    <div id="usb-wait-box" hidden style="background:#122c3a;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#7cc7f0;line-height:1.6;margin-bottom:10px">
-      <span class="spin"></span><span id="usb-wait-msg">正在连接车机 U 盘…</span><br>
-      <button onclick="usbAttachCancel()" style="background:#2a4658;border:none;color:#cfe9fa;border-radius:8px;padding:6px 14px;font-size:12.5px;cursor:pointer;margin-top:6px">取消重试</button>
-    </div>
+    <div id="usb-status" style="display:none;margin-bottom:10px" aria-live="polite"></div>
     <div id="usb-hint" class="hint">浏览和管理车机U盘 (特斯拉写入的镜像)。连接后会临时断开车机读取几秒，5 分钟无操作自动恢复。</div>
     <div id="arch-hint" class="hint" style="display:none">归档区 (F50 内部存储): 查看器用的视频副本与文件中转。</div>
     <div id="purge-box" class="fm-purge">
@@ -4230,7 +4242,7 @@ body.settings-open { overflow:hidden; }
         </div>
         <div class="bk-foot">Bark · 分组 <span id="bk-pv-group">Tesla 哨兵</span> · <span id="bk-pv-sound">系统默认</span> · <span id="bk-pv-level">即时提醒</span></div>
       </div>
-      <div class="hint">发送测试时优先使用最新真实事件；归档为空会自动使用虚拟事件，勾选截图时同时发送虚拟测试图，不会写入录像归档。</div>
+      <div class="hint">发送测试时优先使用最新真实事件；归档为空会自动使用虚拟事件。勾选截图时优先发送真实触发图，无图则使用品牌 Logo，不会写入录像归档。</div>
     </div>
     <div class="updbtns">
       <button class="mini primary" onclick="ntSave()">保存设置</button>
@@ -10252,58 +10264,8 @@ function audioAll(on) {
   });
   audioUpdateSel();
 }
-function audioUsbStatusHtml(attached) {
-  if (!attached) {
-    return '<div style="background:#3a2a12;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0b429;line-height:1.6">' +
-      'U盘当前未连接管理（车机正常读写中）<br>' +
-      '<button onclick="audioUsbAttach()" style="background:#e8443f;border:none;color:#fff;border-radius:8px;padding:7px 16px;font-size:12.5px;cursor:pointer;margin-top:6px"><svg class="ic"><use href="#i-link"/></svg>连接车机U盘 (临时断开车机读取)</button></div>';
-  }
-  return '<div style="background:#1a3325;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#4cc38a;line-height:1.6">' +
-    '已连接 — 车机读取已临时断开，可直接写入锁车声音<br>' +
-    '<span style="color:#7d8894;font-size:11.5px">断开满 5 分钟无操作会自动恢复车机导出</span><br>' +
-    '<button onclick="audioUsbDetach()" style="display:block;width:100%;background:#e8443f;border:none;color:#fff;border-radius:9px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer;margin-top:10px">恢复车机导出</button></div>';
-}
 async function refreshAudioUsbStatus() {
-  const st = document.getElementById('audio-usb-status');
-  if (!st) return;
-  try {
-    const j = await (await fetch('/api/usb/job', { cache: 'no-store' })).json();
-    st.innerHTML = audioUsbStatusHtml(!!j.attached);
-  } catch (e) {}
-}
-let audioUsbPoll = null;
-async function audioUsbAttach() {
-  toast('正在连接，车机读取将断开几秒…');
-  let j;
-  try {
-    j = await (await fetch('/api/usb/attach', { method: 'POST',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wait: true }) })).json();
-  } catch (e) { toast('连接失败'); return; }
-  if (!j.ok) { toast(j.msg || '连接失败'); refreshAudioUsbStatus(); return; }
-  const paint = job => {
-    const st = document.getElementById('audio-usb-status');
-    if (!st) return;
-    st.innerHTML = '<div style="background:#3a2a12;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0b429;line-height:1.6">' +
-      esc(job.message || '正在连接车机 U 盘…') + '（' + (job.elapsed || 0) + ' 秒，车机读取已断开）</div>';
-  };
-  paint(j.job || { state: 'running' });
-  clearInterval(audioUsbPoll);
-  audioUsbPoll = setInterval(async () => {
-    let s;
-    try { s = await (await fetch('/api/usb/job', { cache: 'no-store' })).json(); } catch (e) { return; }
-    const job = s.job || {};
-    if (job.state === 'running') { paint(job); return; }
-    clearInterval(audioUsbPoll); audioUsbPoll = null;
-    toast(job.state === 'done' ? '已连接车机U盘' : (job.message || '连接失败'));
-    refreshAudioUsbStatus();
-  }, 1000);
-}
-async function audioUsbDetach() {
-  let j;
-  try { j = await (await fetch('/api/usb/detach', { method: 'POST' })).json(); }
-  catch (e) { j = { ok: false, msg: '恢复失败' }; }
-  toast(j.ok ? '已恢复车机导出' : (j.msg || '恢复失败'));
-  await refreshAudioUsbStatus();
+  return refreshUsbStatus();
 }
 async function refreshAudio() {
   refreshAudioUsbStatus();
@@ -10666,58 +10628,16 @@ async function purgeTeslaCam() {
   await fmSend({ area: 'usb', op: 'purge_teslacam', items: [] });
 }
 /* ---------- 涂装 (Wraps) ---------- */
-let wrapAttached = false;   // 与文件管理共用同一个 U 盘管理状态
-function wrapStatusHtml(attached) {
-  if (!attached) {
-    return '<div style="background:#3a2a12;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0b429;line-height:1.6">' +
-      '⚠ U盘当前未连接管理 (车机正常读写中)<br>' +
-      '<button onclick="wrapAttach()" style="background:#e8443f;border:none;color:#fff;border-radius:8px;padding:7px 16px;font-size:12.5px;cursor:pointer;margin-top:6px"><svg class="ic"><use href="#i-link"/></svg>连接车机U盘 (临时断开车机读取)</button></div>';
-  }
-  return '<div style="background:#1a3325;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#4cc38a;line-height:1.6">' +
-    '🟢 已连接 — 上传的图片会直接写入车机U盘 Wraps/ 目录<br>' +
-    '<span style="color:#7d8894;font-size:11.5px">断开满 5 分钟无操作会自动恢复车机导出</span><br>' +
-    '<button onclick="wrapDetach()" style="display:block;width:100%;background:#e8443f;border:none;color:#fff;border-radius:9px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer;margin-top:10px;box-shadow:0 3px 10px rgba(232,68,63,.35)">✅ 恢复车机导出</button></div>';
-}
-let wrapPoll = null;
-async function wrapAttach() {
-  toast('⏳ 正在连接 (车机读取将断开几秒)...');
-  const j = await (await fetch('/api/usb/attach', { method: 'POST',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wait: true }) })).json();
-  if (!j.ok) { toast('❌ ' + j.msg); refreshWraps(); return; }
-  // 与文件管理一致: 被占用时服务端后台自动重试, 这里轮询等待进度
-  const paint = (job) => {
-    const st = document.getElementById('wraps-status');
-    if (!st) return;
-    st.innerHTML = '<div style="background:#3a2a12;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0b429;line-height:1.6">⏳ ' +
-      (job.message || '正在连接车机 U 盘…') + '（' + (job.elapsed || 0) + ' 秒，车机读取已断开）</div>';
-  };
-  paint(j.job || { state: 'running' });
-  clearInterval(wrapPoll);
-  wrapPoll = setInterval(async () => {
-    let s;
-    try { s = await (await fetch('/api/usb/job', { cache: 'no-store' })).json(); } catch (e) { return; }
-    const job = s.job || {};
-    if (job.state === 'running') { paint(job); return; }
-    clearInterval(wrapPoll); wrapPoll = null;
-    if (job.state === 'done') toast('✅ 已连接车机U盘');
-    else if (job.state === 'error') toast('❌ ' + (job.message || '连接失败'));
-    refreshWraps();
-  }, 1000);
-}
-async function wrapDetach() {
-  const j = await (await fetch('/api/usb/detach', { method: 'POST' })).json().catch(() => ({}));
-  toast(j.ok ? '✅ ' + t('已恢复车机导出') : '❌ ' + t(j.msg || '恢复失败'));
-  await refreshWraps();
-}
+let wrapAttached = false;   // 与文件管理、锁车声音共用同一个 U 盘管理状态
 async function refreshWraps() {
-  const st = document.getElementById('wraps-status');
+  refreshUsbStatus();
   const grid = document.getElementById('wraps-grid');
   let j;
   try {
     j = await (await fetch('/api/usb/browse?dir=' + encodeURIComponent('Wraps'))).json();
   } catch (e) { return; }
   wrapAttached = !!j.attached;
-  st.innerHTML = wrapStatusHtml(wrapAttached);
+  usbSetAttached(wrapAttached);
   grid.innerHTML = '';
   if (!j.ok) {
     grid.innerHTML = wrapAttached
@@ -10772,67 +10692,172 @@ function switchArea(a) {
   document.getElementById('settings-title').textContent = '文件管理';
   document.getElementById('area-usb').classList.toggle('active', a === 'usb');
   document.getElementById('area-archive').classList.toggle('active', a === 'archive');
-  const waitBox = document.getElementById('usb-wait-box');
-  if (waitBox && a !== 'usb') waitBox.hidden = true;
   document.getElementById('usb-hint').style.display = a === 'usb' ? '' : 'none';
   document.getElementById('arch-hint').style.display = a === 'archive' ? '' : 'none';
   document.getElementById('purge-box').style.display = a === 'usb' ? 'flex' : 'none';
   curDir = a === 'usb' ? '' : '/archive/files';
   refreshFiles();
 }
-function usbStatusHtml(attached, msg) {
-  if (!attached) {
-    return '<div style="background:#3a2a12;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0b429;line-height:1.6">' +
-      '⚠ U盘当前未连接管理 (车机正常读写中)<br>' +
-      '<button onclick="usbAttach()" style="background:#e8443f;border:none;color:#fff;border-radius:8px;padding:7px 16px;font-size:12.5px;cursor:pointer;margin-top:6px"><svg class="ic"><use href="#i-link"/></svg>连接车机U盘 (临时断开车机读取)</button></div>';
+const USB_PANELS = [
+  ['usb-status', '网页改动会直接写入车机 U 盘'],
+  ['audio-usb-status', '可直接管理并写入锁车声音'],
+  ['wraps-status', '上传的图片会直接写入车机 U 盘 Wraps/ 目录'],
+];
+let usbPanelAttached = false;
+let usbPanelJob = { state: 'idle', message: '', elapsed: 0 };
+let USB_PANEL_POLL = null;
+let usbPanelPolling = false;
+let usbPanelAction = false;
+let usbStatusSeq = 0;
+function usbPanelHtml(detail) {
+  const job = usbPanelJob || {}, state = job.state || 'idle';
+  if (state === 'running' || state === 'detaching') {
+    const title = state === 'detaching' ? '正在恢复车机导出' : '正在连接车机 U 盘';
+    const cancel = state === 'running'
+      ? '<div class="usb-panel-actions"><button class="usb-panel-btn secondary" onclick="usbAttachCancel()"' +
+        (job.cancelling ? ' disabled' : '') + '>' + (job.cancelling ? '正在取消…' : '取消连接') + '</button></div>' : '';
+    return '<div class="usb-panel busy"><div class="usb-panel-title"><span class="spin"></span>' + title + '</div>' +
+      '<div class="usb-panel-detail">' + esc(job.message || title) + '</div>' +
+      '<div class="usb-panel-detail">已用时 ' + (job.elapsed || 0) + ' 秒 · 后台执行，可切换页面</div>' + cancel + '</div>';
   }
-  return '<div style="background:#1a3325;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#4cc38a;line-height:1.6">' +
-    '🟢 已连接 — U盘已从车机临时断开, 你在网页上的改动会直接写入车机U盘<br>' +
-    '<span style="color:#7d8894;font-size:11.5px">断开满 5 分钟无操作会自动恢复车机导出</span><br>' +
-    '<button onclick="usbDetach()" style="display:block;width:100%;background:#e8443f;border:none;color:#fff;border-radius:9px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer;margin-top:10px;box-shadow:0 3px 10px rgba(232,68,63,.35)">✅ 恢复车机导出</button></div>';
+  if (usbPanelAttached) {
+    return '<div class="usb-panel connected"><div class="usb-panel-title">已连接 — ' + esc(detail) + '</div>' +
+      '<div class="usb-panel-detail">车机读取已临时断开；5 分钟无操作会自动恢复车机导出</div>' +
+      '<div class="usb-panel-actions"><button class="usb-panel-btn primary" onclick="usbDetach()">恢复车机导出</button></div></div>';
+  }
+  return '<div class="usb-panel disconnected"><div class="usb-panel-title">U 盘当前未连接管理（车机正常读写中）</div>' +
+    '<div class="usb-panel-detail">连接后可管理文件，操作期间会临时断开车机读取</div>' +
+    '<div class="usb-panel-actions"><button class="usb-panel-btn primary" onclick="usbAttach()"><svg class="ic"><use href="#i-link"/></svg>连接车机U盘</button></div></div>';
+}
+function renderUsbPanels() {
+  USB_PANELS.forEach(([id, detail]) => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = usbPanelHtml(detail);
+  });
+}
+function usbSetAttached(attached) {
+  usbPanelAttached = !!attached;
+  usbAttached = usbPanelAttached;
+  wrapAttached = usbPanelAttached;
+  renderUsbPanels();
+}
+function usbApplyStatus(j) {
+  usbPanelJob = (j && j.job) || { state: 'idle', message: '', elapsed: 0 };
+  usbSetAttached(j && j.attached);
+}
+async function usbFetchJson(url, options = {}, timeout = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    return await response.json();
+  } finally { clearTimeout(timer); }
+}
+async function refreshUsbStatus() {
+  const seq = ++usbStatusSeq;
+  try {
+    const j = await usbFetchJson('/api/usb/job', { cache: 'no-store' }, 8000);
+    if (seq !== usbStatusSeq) return null;
+    usbApplyStatus(j);
+    return j;
+  } catch (e) { return null; }
+}
+function usbRefreshActive() {
+  if (document.getElementById('st-files').classList.contains('active')) {
+    if (area === 'usb') refreshFiles();
+  } else if (document.getElementById('st-wraps').classList.contains('active')) {
+    refreshWraps();
+  } else if (document.getElementById('st-audio').classList.contains('active')) {
+    refreshAudio();
+  }
+}
+function usbPollStop() {
+  clearInterval(USB_PANEL_POLL);
+  USB_PANEL_POLL = null;
+}
+function usbPollStart() {
+  if (USB_PANEL_POLL) return;
+  USB_PANEL_POLL = setInterval(async () => {
+    if (usbPanelPolling) return;
+    usbPanelPolling = true;
+    const j = await refreshUsbStatus();
+    usbPanelPolling = false;
+    if (!j) return;
+    const job = j.job || {}, state = job.state || 'idle';
+    if (state === 'running' || state === 'detaching') return;
+    usbPollStop();
+    if (state === 'done') {
+      curDir = '';
+      toast('已连接车机U盘');
+    } else if (state === 'error') {
+      toast(job.message || '操作失败');
+    } else if (job.message) {
+      toast(job.message);
+    }
+    usbRefreshActive();
+  }, 700);
 }
 async function usbAttach() {
-  toast('⏳ 正在连接 (车机读取将断开几秒)...');
-  const r = await fetch('/api/usb/attach', { method: 'POST',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wait: true }) });
-  const j = await r.json();
-  if (!j.ok) { toast('❌ ' + j.msg); refreshFiles(); return; }
-  // 被占用时服务端自动重试, 这里轮询等待进度, 用户可随时取消
-  usbWaitPaint(j.job || { state: 'running' });
-  clearInterval(USB_WAIT_POLL);
-  USB_WAIT_POLL = setInterval(async () => {
-    let s;
-    try { s = await (await fetch('/api/usb/job', { cache: 'no-store' })).json(); } catch (e) { return; }
-    const job = s.job || {};
-    usbWaitPaint(job);
-    if (job.state === 'running') return;
-    clearInterval(USB_WAIT_POLL); USB_WAIT_POLL = null;
-    usbWaitPaint(job);
-    if (job.state === 'done') { toast('✅ 已连接车机U盘'); curDir = ''; }
-    else if (job.state === 'error') toast('❌ ' + (job.message || '连接失败'));
-    refreshFiles();
-  }, 1000);
-}
-let USB_WAIT_POLL = null;
-function usbWaitPaint(job) {
-  const box = document.getElementById('usb-wait-box');
-  if (!box) return;
-  box.hidden = job.state !== 'running';
-  if (!box.hidden) document.getElementById('usb-wait-msg').textContent = job.message || '正在连接…';
+  if (usbPanelAction) return;
+  usbPanelAction = true;
+  usbPanelJob = { state: 'running', message: '正在提交连接请求…', elapsed: 0 };
+  renderUsbPanels();
+  try {
+    const j = await usbFetchJson('/api/usb/attach', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wait: true }) });
+    if (!j.ok) {
+      toast(j.msg || '连接失败');
+      await refreshUsbStatus();
+      if (usbPanelJob.state === 'running' || usbPanelJob.state === 'detaching') usbPollStart();
+      return;
+    }
+    usbPanelJob = j.job || { state: 'running', message: '正在连接车机 U 盘…', elapsed: 0 };
+    renderUsbPanels();
+    usbPollStart();
+  } catch (e) {
+    toast('连接请求超时或失败，请检查服务状态');
+    usbPollStart();
+    await refreshUsbStatus();
+  } finally { usbPanelAction = false; }
 }
 async function usbAttachCancel() {
-  clearInterval(USB_WAIT_POLL); USB_WAIT_POLL = null;
-  try { await fetch('/api/usb/attach/cancel', { method: 'POST' }); } catch (e) {}
-  const box = document.getElementById('usb-wait-box');
-  if (box) box.hidden = true;
-  toast('已取消连接重试');
-  refreshFiles();
+  if (usbPanelAction) return;
+  usbPanelAction = true;
+  usbPanelJob = { ...usbPanelJob, cancelling: true, message: '正在取消连接并恢复车机导出…' };
+  renderUsbPanels();
+  try {
+    const j = await usbFetchJson('/api/usb/attach/cancel', { method: 'POST' }, 6000);
+    toast(j.msg || '已请求取消');
+    usbPollStart();
+    await refreshUsbStatus();
+  } catch (e) {
+    toast('取消请求失败，请重试');
+    await refreshUsbStatus();
+  } finally { usbPanelAction = false; }
 }
 async function usbDetach() {
-  const j = await (await fetch('/api/usb/detach', { method: 'POST' })).json();
-  toast(j.ok ? '✅ ' + t('已恢复车机导出') : '❌ ' + t(j.msg));
-  document.getElementById('dir-nav').style.display = 'none';
-  refreshFiles();
+  if (usbPanelAction) return;
+  usbPanelAction = true;
+  usbPanelJob = { state: 'detaching', message: '正在提交恢复请求…', elapsed: 0 };
+  usbSetAttached(false);
+  const nav = document.getElementById('dir-nav');
+  if (nav) nav.style.display = 'none';
+  try {
+    const j = await usbFetchJson('/api/usb/detach', { method: 'POST' });
+    if (!j.ok) {
+      toast(j.msg || '恢复失败');
+      await refreshUsbStatus();
+      if (usbPanelJob.state === 'running' || usbPanelJob.state === 'detaching') usbPollStart();
+      return;
+    }
+    usbPanelJob = j.job || { state: 'detaching', message: '正在恢复车机导出…', elapsed: 0 };
+    renderUsbPanels();
+    usbPollStart();
+  } catch (e) {
+    toast('恢复请求超时或失败，请检查服务状态');
+    usbPollStart();
+    await refreshUsbStatus();
+  } finally { usbPanelAction = false; }
 }
 function goDir(d) {
   if (area === 'usb') {
@@ -10846,6 +10871,7 @@ function goDir(d) {
 }
 async function refreshFiles(dir) {
   const request = ++browseRequest;
+  if (area === 'usb') refreshUsbStatus();
   if (dir !== undefined) curDir = dir;
   fmSel.clear();
   fmDestCancel();
@@ -10858,8 +10884,7 @@ async function refreshFiles(dir) {
     j = await (await fetch('/api/usb/browse?dir=' + encodeURIComponent(curDir))).json();
     if (request !== browseRequest) return;
     statusEl.style.display = 'block';
-    statusEl.innerHTML = usbStatusHtml(j.attached, j.msg);
-    usbAttached = !!j.attached;
+    usbSetAttached(j.attached);
     if (!j.attached) { nav.style.display = 'none'; list.innerHTML = ''; fmUpdate(); return; }
     nav.style.display = 'block';
   } else {
@@ -12007,14 +12032,37 @@ def usb_img_ready():
     return _img_vol_offset() is not None
 
 
-def usb_attach():
-    """临时断开车机读取, 挂载镜像到 MNT (读写). 返回 (ok, msg)"""
+USB_CMD_TIMEOUT = 8
+
+
+class _USBAttachCancelled(Exception):
+    pass
+
+
+def _usb_run(args, timeout=USB_CMD_TIMEOUT):
+    """挂载相关命令必须有上限, 避免异常内核/存储把 HTTP 工作线程永久拖住。"""
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("命令执行超时: %s" % args[0]) from None
+
+
+def _usb_cancelled(cancel):
+    try:
+        return bool(cancel and cancel())
+    except Exception:
+        return False
+
+
+def usb_attach(cancel=None):
+    """临时断开车机读取, 挂载镜像到 MNT (读写); 取消/异常都会恢复导出并释放锁。"""
     global usb_attached, usb_timer
+    if _usb_cancelled(cancel):
+        return False, "已取消连接"
     if storage_busy():
         return False, "正在设置容量或格式化 U 盘"
     if not usb_img_ready():
         return False, "镜像未就绪: 车机可能正在格式化 U 盘, 请稍后再试"
-    # 文件管理要尽快读到镜像: 先停掉正在跑的车机 U 盘只读同步, 避免和挂载抢 I/O
     if not _stop_archive_sync_wait():
         return False, "正在归档迁移，请稍后再连接车机U盘"
     _ARCH_SYNC_PAUSE.update(on=True, why="文件管理正在查看车机U盘")
@@ -12024,96 +12072,111 @@ def usb_attach():
             return False, "正在设置容量或格式化 U 盘"
         if usb_attached and os.path.ismount(MNT):
             return True, "already"
-        # 先拿跨进程锁再动 UDC: 归档/自愈正在操作镜像时直接让开, 不抢 loop 与挂载点。
-        # 在线同步只短暂持共享锁, 等它放开即可, 避免用户偶发"点不动 U盘管理"。
         for _ in range(6):
+            if _usb_cancelled(cancel):
+                _release_usb_flock()
+                _ARCH_SYNC_PAUSE.update(on=False, why="")
+                return False, "已取消连接"
             if _acquire_usb_flock():
                 break
             time.sleep(0.4)
         else:
             _ARCH_SYNC_PAUSE.update(on=False, why="")
             return False, "U盘正被其它任务占用 (归档/自愈/同步), 稍后再试"
+        completed = False
         try:
+            if _usb_cancelled(cancel):
+                raise _USBAttachCancelled()
             os.makedirs(MNT, exist_ok=True)
-        except OSError as ex:
-            _release_usb_flock()
-            _ARCH_SYNC_PAUSE.update(on=False, why="")
-            return False, "创建挂载点失败: " + str(ex)
-        _gadget_rebind(False)  # 停止导出
-        time.sleep(1)
-        # 上次异常退出可能留下指向本镜像的 loop 绑定, 不释放会 EBUSY
-        try:
-            cur = subprocess.run([LOSETUP, LOOPDEV], capture_output=True, text=True).stdout
+            if os.path.ismount(MNT):
+                _usb_run(["umount", "-l", MNT], timeout=5)
+            _gadget_rebind(False)
+            time.sleep(1)
+            if _usb_cancelled(cancel):
+                raise _USBAttachCancelled()
+            cur = _usb_run([LOSETUP, LOOPDEV], timeout=5).stdout
             if IMG in cur:
-                subprocess.run([LOSETUP, "-d", LOOPDEV], capture_output=True)
-        except Exception:
-            pass
-        r = subprocess.run([LOSETUP, "-P", LOOPDEV, IMG], capture_output=True, text=True)
-        if r.returncode != 0:
-            r = subprocess.run([LOSETUP, LOOPDEV, IMG], capture_output=True, text=True)
-        if r.returncode != 0:
-            _gadget_rebind(True)
-            _release_usb_flock()
-            _ARCH_SYNC_PAUSE.update(on=False, why="")
-            return False, "losetup 失败: " + r.stderr.strip()[-120:]
-        off = _img_vol_offset()
+                _usb_run([LOSETUP, "-d", LOOPDEV], timeout=5)
+            r = _usb_run([LOSETUP, "-P", LOOPDEV, IMG])
+            if r.returncode != 0:
+                r = _usb_run([LOSETUP, LOOPDEV, IMG])
+            if r.returncode != 0:
+                raise RuntimeError("losetup 失败: " + (r.stderr or "").strip()[-120:])
+            off = _img_vol_offset()
 
-        def mount_dev(dev, extra=None):
-            args = ["mount", "-t", "exfat"]
-            if extra:
-                args += ["-o", extra]
-            res = subprocess.run(args + [dev, MNT], capture_output=True, text=True)
-            return res.returncode == 0, (res.stderr or "").strip()[-120:]
+            def mount_dev(dev, extra=None):
+                args = ["mount", "-t", "exfat"]
+                if extra:
+                    args += ["-o", extra]
+                res = _usb_run(args + [dev, MNT], timeout=10)
+                return res.returncode == 0, (res.stderr or "").strip()[-120:]
 
-        mounted, err = False, ""
-        # 1) 有分区表时卷在分区里: 挂载分区节点 (loop3p1...), 整盘直接挂会 Invalid argument
-        if off:
-            devs = []
-            for _ in range(20):
-                devs = sorted(glob.glob(LOOPDEV + "p*"))
-                if devs:
-                    break
-                time.sleep(0.1)
-            for dev in devs:
-                mounted, err = mount_dev(dev)
-                if mounted:
-                    break
-        else:
-            mounted, err = mount_dev(LOOPDEV)
-        # 2) 内核没生成分区节点时, 让 loop 从卷偏移开始, 不再依赖 p1 节点
-        if not mounted and off:
-            subprocess.run([LOSETUP, "-d", LOOPDEV], capture_output=True)
-            r = subprocess.run([LOSETUP, "-o", str(off), LOOPDEV, IMG], capture_output=True, text=True)
-            if r.returncode == 0:
+            mounted, err = False, ""
+            if off:
+                devs = []
+                for _ in range(20):
+                    if _usb_cancelled(cancel):
+                        raise _USBAttachCancelled()
+                    devs = sorted(glob.glob(LOOPDEV + "p*"))
+                    if devs:
+                        break
+                    time.sleep(0.1)
+                for dev in devs:
+                    mounted, err = mount_dev(dev)
+                    if mounted:
+                        break
+            else:
                 mounted, err = mount_dev(LOOPDEV)
-        # 3) 个别 busybox 不支持 losetup -o: 交给 mount 自己按 offset 挂镜像文件
-        if not mounted and off:
-            subprocess.run([LOSETUP, "-d", LOOPDEV], capture_output=True)
-            mounted, err = mount_dev(IMG, "offset=%d" % off)
-        if not mounted:
-            subprocess.run([LOSETUP, "-d", LOOPDEV], capture_output=True)
-            _gadget_rebind(True)
-            _release_usb_flock()
-            msg = err
-            if off and "Invalid argument" in msg:
-                msg += "（镜像分区暂时读不出来，可稍后重试；持续失败请用「格式化 U 盘」重建）"
-            elif "Invalid argument" in msg:
-                msg += "（镜像不是有效的 exFAT 卷，车机可能正在格式化，请稍后再试）"
-            _ARCH_SYNC_PAUSE.update(on=False, why="")
-            return False, "挂载失败: " + msg
-        usb_attached = True
-        # 无操作自动恢复
-        if usb_timer:
-            usb_timer.cancel()
-        usb_timer = threading.Timer(USB_AUTO_DETACH, usb_detach_safe)
-        usb_timer.daemon = True
-        usb_timer.start()
-        return True, "attached"
+            if not mounted and off:
+                _usb_run([LOSETUP, "-d", LOOPDEV], timeout=5)
+                r = _usb_run([LOSETUP, "-o", str(off), LOOPDEV, IMG])
+                if r.returncode == 0:
+                    mounted, err = mount_dev(LOOPDEV)
+            if not mounted and off:
+                _usb_run([LOSETUP, "-d", LOOPDEV], timeout=5)
+                mounted, err = mount_dev(IMG, "offset=%d" % off)
+            if not mounted:
+                msg = err
+                if off and "Invalid argument" in msg:
+                    msg += "（镜像分区暂时读不出来，可稍后重试；持续失败请用「格式化 U 盘」重建）"
+                elif "Invalid argument" in msg:
+                    msg += "（镜像不是有效的 exFAT 卷，车机可能正在格式化，请稍后再试）"
+                raise RuntimeError("挂载失败: " + msg)
+            if _usb_cancelled(cancel):
+                raise _USBAttachCancelled()
+            usb_attached = True
+            if usb_timer:
+                usb_timer.cancel()
+            usb_timer = threading.Timer(USB_AUTO_DETACH, usb_detach_safe)
+            usb_timer.daemon = True
+            usb_timer.start()
+            completed = True
+            return True, "attached"
+        except _USBAttachCancelled:
+            return False, "已取消连接"
+        except (OSError, RuntimeError, subprocess.SubprocessError) as ex:
+            return False, str(ex)[:180]
+        finally:
+            if not completed:
+                try:
+                    if os.path.ismount(MNT):
+                        _usb_run(["umount", "-l", MNT], timeout=5)
+                except Exception:
+                    pass
+                try:
+                    _usb_run([LOSETUP, "-d", LOOPDEV], timeout=5)
+                except Exception:
+                    pass
+                _gadget_rebind(True)
+                usb_attached = False
+                _release_usb_flock()
+                _ARCH_SYNC_PAUSE.update(on=False, why="")
 
 
 def usb_detach():
-    """卸载镜像并恢复车机导出. 返回 (ok, msg)"""
+    """卸载镜像并恢复车机导出; 即使卸载失败也恢复 UDC 并释放网页占用状态。"""
     global usb_attached, usb_timer
+    usb_attach_cancel()   # 内部写入后的恢复同样不能让等待任务重新连接
     if storage_busy():
         return False, "正在设置容量或格式化 U 盘"
     with usb_lock:
@@ -12122,70 +12185,134 @@ def usb_detach():
         if usb_timer:
             usb_timer.cancel()
             usb_timer = None
-        if os.path.ismount(MNT):
-            subprocess.run(["sync"], capture_output=True)
-            for _ in range(3):
-                r = subprocess.run(["umount", MNT], capture_output=True, text=True)
-                if r.returncode == 0:
-                    break
-                time.sleep(2)
-            else:
-                return False, "卸载失败, 有进程占用 " + MNT
-        subprocess.run([LOSETUP, "-d", LOOPDEV], capture_output=True)
-        _gadget_rebind(True)
-        usb_attached = False
-        _ARCH_SYNC_PAUSE.update(on=False, why="")   # 断开文件管理后恢复归档同步
-        _release_usb_flock()   # 挂载周期结束才释放, 失败路径继续持锁
-        return True, "detached"
+        warning = ""
+        try:
+            if os.path.ismount(MNT):
+                try:
+                    _usb_run(["sync"], timeout=10)
+                except RuntimeError as ex:
+                    warning = str(ex)
+                for _ in range(3):
+                    try:
+                        r = _usb_run(["umount", MNT])
+                        if r.returncode == 0:
+                            break
+                    except RuntimeError:
+                        pass
+                    time.sleep(1)
+                if os.path.ismount(MNT):
+                    try:
+                        _usb_run(["umount", "-l", MNT], timeout=5)
+                    except RuntimeError:
+                        pass
+                if os.path.ismount(MNT):
+                    return False, "卸载失败, 有进程占用 " + MNT
+            try:
+                _usb_run([LOSETUP, "-d", LOOPDEV], timeout=5)
+            except RuntimeError as ex:
+                warning = warning or str(ex)
+            return True, warning or "detached"
+        except (OSError, RuntimeError, subprocess.SubprocessError) as ex:
+            return False, str(ex)[:180]
+        finally:
+            _gadget_rebind(True)
+            usb_attached = False
+            _ARCH_SYNC_PAUSE.update(on=False, why="")
+            _release_usb_flock()
 
 
 _USB_JOB_LOCK = threading.Lock()
-_USB_JOB = {"state": "idle", "message": "", "elapsed": 0, "attempts": 0, "cancel": False}
+_USB_JOB = {"state": "idle", "message": "", "elapsed": 0, "attempts": 0,
+            "cancel": False, "cancelling": False, "seq": 0}
 USB_ATTACH_WAIT_MAX = 300   # 自动重试最长等待秒数
+
+
+def _usb_job_public():
+    return {k: v for k, v in _USB_JOB.items() if k not in ("cancel", "seq")}
 
 
 def usb_job():
     with _USB_JOB_LOCK:
-        return {k: v for k, v in _USB_JOB.items() if k != "cancel"}
+        return _usb_job_public()
+
+
+def _usb_job_update(seq, **values):
+    with _USB_JOB_LOCK:
+        if seq != _USB_JOB["seq"]:
+            return False
+        _USB_JOB.update(**values)
+        return True
+
+
+def _usb_job_cancelled(seq):
+    with _USB_JOB_LOCK:
+        return seq != _USB_JOB["seq"] or (_USB_JOB["state"] == "running" and _USB_JOB["cancel"])
+
+
+def _usb_job_cancel_requested(seq):
+    with _USB_JOB_LOCK:
+        return seq == _USB_JOB["seq"] and _USB_JOB["state"] == "running" and _USB_JOB["cancel"]
 
 
 def usb_attach_async():
-    """连接车机 U 盘; 被占用时每 2 秒自动重试并报告等待进度, 可取消。"""
+    """连接车机 U 盘; 同一时刻只有一个有效任务, 取消或断开会作废旧任务。"""
     with _USB_JOB_LOCK:
         if _USB_JOB["state"] == "running":
-            return {"ok": True, "job": usb_job(), "msg": "正在等待连接"}
+            return {"ok": True, "job": _usb_job_public(), "msg": "正在等待连接"}
+        if _USB_JOB["state"] == "detaching":
+            return {"ok": False, "job": _usb_job_public(), "msg": "正在恢复车机导出，请稍候"}
+        _USB_JOB["seq"] += 1
+        seq = _USB_JOB["seq"]
         _USB_JOB.update(state="running", message="正在连接车机 U 盘…", elapsed=0,
-                        attempts=0, cancel=False)
+                        attempts=0, cancel=False, cancelling=False)
+
+    def cancelled():
+        return _usb_job_cancelled(seq)
 
     def work():
         t0 = time.time()
         try:
             while True:
+                if cancelled():
+                    _usb_job_update(seq, state="idle", message="已取消连接", cancelling=False)
+                    return
                 with _USB_JOB_LOCK:
-                    if _USB_JOB["cancel"]:
-                        _USB_JOB.update(state="idle", message="已取消连接")
+                    if seq != _USB_JOB["seq"]:
                         return
                     _USB_JOB["attempts"] += 1
                     attempts = _USB_JOB["attempts"]
                 try:
-                    ok, msg = usb_attach()
+                    ok, msg = usb_attach(cancel=cancelled)
                 except Exception as ex:
                     ok, msg = False, str(ex)[:120]
                 if ok:
-                    _USB_JOB.update(state="done", message="已连接车机 U 盘",
-                                    elapsed=int(time.time() - t0))
+                    if cancelled():
+                        # 用户取消由本任务卸载; 若断开任务已接管, 不重复 umount。
+                        if _usb_job_cancel_requested(seq):
+                            usb_detach()
+                        _usb_job_update(seq, state="idle", message="已取消连接", cancelling=False)
+                    else:
+                        _usb_job_update(seq, state="done", message="已连接车机 U 盘",
+                                        elapsed=int(time.time() - t0))
+                    return
+                if cancelled():
+                    _usb_job_update(seq, state="idle", message="已取消连接", cancelling=False)
                     return
                 waited = int(time.time() - t0)
                 if waited >= USB_ATTACH_WAIT_MAX:
-                    _USB_JOB.update(state="error",
+                    _usb_job_update(seq, state="error",
                                     message="等待 %d 秒仍被占用：%s" % (waited, msg))
                     return
-                _USB_JOB.update(elapsed=waited,
+                _usb_job_update(seq, elapsed=waited,
                                 message="U 盘正被占用（%s），自动重试中：第 %d 次，已等待 %d 秒"
                                         % (msg, attempts, waited))
-                time.sleep(2)
+                for _ in range(20):
+                    if cancelled():
+                        _usb_job_update(seq, state="idle", message="已取消连接", cancelling=False)
+                        return
+                    time.sleep(0.1)
         except Exception as ex:
-            _USB_JOB.update(state="error", message=str(ex)[:160])
+            _usb_job_update(seq, state="error", message=str(ex)[:160])
 
     threading.Thread(target=work, daemon=True, name="usb-attach-wait").start()
     return {"ok": True, "job": usb_job()}
@@ -12193,8 +12320,37 @@ def usb_attach_async():
 
 def usb_attach_cancel():
     with _USB_JOB_LOCK:
-        _USB_JOB["cancel"] = True
+        if _USB_JOB["state"] != "running":
+            return {"ok": True, "msg": "当前没有连接任务"}
+        _USB_JOB.update(cancel=True, cancelling=True, message="正在取消连接并恢复车机导出…")
     return {"ok": True, "msg": "已请求取消"}
+
+
+def usb_detach_async():
+    """后台恢复车机导出, 同时作废旧连接任务, HTTP 请求不再等待 umount/sync。"""
+    with _USB_JOB_LOCK:
+        if _USB_JOB["state"] == "detaching":
+            return {"ok": True, "job": _usb_job_public(), "msg": "正在恢复车机导出"}
+        _USB_JOB["seq"] += 1
+        seq = _USB_JOB["seq"]
+        _USB_JOB.update(state="detaching", message="正在断开车机 U 盘并恢复导出…",
+                        elapsed=0, attempts=0, cancel=False, cancelling=False)
+
+    def work():
+        t0 = time.time()
+        try:
+            ok, msg = usb_detach()
+        except Exception as ex:
+            ok, msg = False, str(ex)[:160]
+        elapsed = int(time.time() - t0)
+        if ok:
+            detail = "" if msg == "detached" else "（%s）" % msg
+            _usb_job_update(seq, state="idle", message="已恢复车机导出" + detail, elapsed=elapsed)
+        else:
+            _usb_job_update(seq, state="error", message=msg, elapsed=elapsed)
+
+    threading.Thread(target=work, daemon=True, name="usb-detach").start()
+    return {"ok": True, "job": usb_job()}
 
 
 def _force_image_offline():
@@ -19298,70 +19454,12 @@ def _bark_virtual_meta():
             "city": "虚拟测试位置", "street": "Bark 推送测试"}
 
 
-@lru_cache(maxsize=1)
-def _bark_virtual_image():
-    """用标准库生成 Bark 测试 PNG, 不依赖真实录像、ffmpeg 或额外图片文件。"""
-    w, h = 640, 360
-    pixels = bytearray(w * h * 3)
-
-    def rect(x0, y0, x1, y1, color):
-        x0, x1 = max(0, int(x0)), min(w, int(x1))
-        y0, y1 = max(0, int(y0)), min(h, int(y1))
-        if x1 <= x0 or y1 <= y0:
-            return
-        row = bytes(color) * (x1 - x0)
-        for yy in range(y0, y1):
-            start = (yy * w + x0) * 3
-            pixels[start:start + len(row)] = row
-
-    for y in range(h):
-        rect(0, y, w, y + 1, (15 + y * 5 // h, 23 + y * 7 // h, 34 + y * 10 // h))
-    red, line, white, muted = (232, 68, 63), (55, 68, 82), (244, 247, 250), (153, 173, 190)
-    rect(0, 0, w, 8, red)
-    rect(28, 28, w - 28, 30, line)
-    rect(28, h - 30, w - 28, h - 28, line)
-    rect(28, 28, 30, h - 28, line)
-    rect(w - 30, 28, w - 28, h - 28, line)
-    font = {
-        "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
-        "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
-        "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
-        "I": ("11111", "00100", "00100", "00100", "00100", "00100", "11111"),
-        "K": ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
-        "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
-        "N": ("10001", "11001", "11001", "10101", "10011", "10011", "10001"),
-        "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
-        "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
-        "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
-        "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
-        "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
-        "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
-    }
-
-    def text(value, x, y, scale, color):
-        for ch in value:
-            glyph = font.get(ch)
-            if glyph:
-                for gy, bits in enumerate(glyph):
-                    for gx, bit in enumerate(bits):
-                        if bit == "1":
-                            rect(x + gx * scale, y + gy * scale,
-                                 x + (gx + 1) * scale, y + (gy + 1) * scale, color)
-            x += 6 * scale
-
-    text("BARK TEST", 108, 90, 8, white)
-    rect(108, 168, 532, 172, red)
-    text("VIRTUAL SENTRY EVENT", 82, 198, 4, muted)
-    rect(286, 270, 354, 274, muted)
-
-    def chunk(kind, data):
-        return (struct.pack("!I", len(data)) + kind + data
-                + struct.pack("!I", zlib.crc32(kind + data) & 0xffffffff))
-
-    raw = b"".join(b"\x00" + bytes(pixels[y * w * 3:(y + 1) * w * 3]) for y in range(h))
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack("!IIBBBBB", w, h, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b""))
+def _bark_brand_logo_bytes():
+    """Bark 测试无截图时回退到品牌图标; 默认 SVG 转成已有的内嵌 JPEG。"""
+    data, content_type = brand_logo_bytes()
+    if content_type == "image/svg+xml":
+        return base64.b64decode(BRAND_LOGO_B64), "image/jpeg"
+    return data, content_type
 
 
 def _bark_text(conf, cat, name, test=False):
@@ -19406,16 +19504,26 @@ def _cover_base(conf):
     return "%s://%s" % (_LAST_HTTP.get("proto") or "http", host)
 
 
-def _bark_cover_url(conf, cat, name):
-    """Bark 的 image 由手机端按 URL 下载; 需要一个手机能访问到的地址。"""
+def _bark_cover_url(conf, cat, name, test=False):
+    """返回 (图片 URL, 是否品牌 Logo); 测试无真实触发图时回退到品牌图标。"""
     base = _cover_base(conf)
     token = str(conf.get("bark_token") or "").strip()
     if not base or not token:
-        return ""
-    if name == BARK_TEST_EVENT:
-        return "%s/api/notify/bark/test-cover.png?token=%s" % (base, urllib.parse.quote(token))
+        return "", False
+    if test:
+        has_cover = False
+        if name != BARK_TEST_EVENT:
+            try:
+                has_cover = bool(_trigger_frame(cat, name)[0])
+            except Exception:
+                pass
+        if not has_cover:
+            _data, content_type = _bark_brand_logo_bytes()
+            ext = {"image/png": "png", "image/webp": "webp"}.get(content_type, "jpg")
+            return "%s/api/notify/bark/test-logo.%s?token=%s" % (
+                base, ext, urllib.parse.quote(token)), True
     return "%s/api/notify/bark/cover.jpg?token=%s&cat=%s&name=%s" % (
-        base, urllib.parse.quote(token), urllib.parse.quote(cat), urllib.parse.quote(name))
+        base, urllib.parse.quote(token), urllib.parse.quote(cat), urllib.parse.quote(name)), False
 
 
 def _bark_send(conf, cat, name, test=False):
@@ -19443,9 +19551,11 @@ def _bark_send(conf, cat, name, test=False):
                           "%s/?ev=%s/%s" % (base, urllib.parse.quote(cat), urllib.parse.quote(name)))
     warn = " (无真实事件, 已使用虚拟测试事件)" if test and name == BARK_TEST_EVENT else ""
     if conf.get("bark_img", True):
-        img = _bark_cover_url(conf, cat, name)
+        img, logo_fallback = _bark_cover_url(conf, cat, name, test=test)
         if img:
-            payload["image"] = img          # Bark 在手机上按这个 URL 下载触发截图
+            payload["image"] = img          # 真实触发图优先, 测试无图时使用品牌 Logo
+            if logo_fallback:
+                warn += " (测试无触发截图, 已使用品牌 Logo)"
         else:
             warn += " (还没有可用的访问地址或截图令牌, 截图未附带)"
     try:
@@ -22476,7 +22586,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if path in ("/api/notify/bark/cover", "/api/notify/bark/cover.jpg",
-                    "/api/notify/bark/test-cover.png"):
+                    "/api/notify/bark/test-logo.jpg", "/api/notify/bark/test-logo.png",
+                    "/api/notify/bark/test-logo.webp"):
             # Bark 在手机上按 URL 下载通知图片, 因此这里必须免登录; 用随机 token 防止被随意遍历。
             # 同时提供 .jpg 后缀, 兼容按扩展名判断图片类型的客户端。
             q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -22485,8 +22596,9 @@ class Handler(BaseHTTPRequestHandler):
             if not token or not hmac.compare_digest(str(q.get("token", [""])[0]), token):
                 self._send(404, b"not found")
                 return
-            if path == "/api/notify/bark/test-cover.png":
-                self._send(200, _bark_virtual_image(), "image/png")
+            if path.startswith("/api/notify/bark/test-logo."):
+                data, content_type = _bark_brand_logo_bytes()
+                self._send(200, data, content_type)
                 return
             cat = q.get("cat", [""])[0]
             name = q.get("name", [""])[0]
@@ -23754,8 +23866,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/usb/attach/cancel":
             self._json(usb_attach_cancel())
         elif path == "/api/usb/detach":
-            ok, msg = usb_detach()
-            self._json({"ok": ok, "msg": "已恢复车机导出" if ok else msg})
+            self._json(usb_detach_async())
         elif path == "/api/upload/usb":
             fn, data, fields = self._read_upload()
             if fn == "TOOBIG":
