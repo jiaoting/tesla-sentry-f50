@@ -539,7 +539,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.006"
+APP_VERSION = "2026.11.28.007"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -4064,7 +4064,7 @@ body.settings-open { overflow:hidden; }
     <div id="skin-list"></div>
   </div>
   <div id="tab-audio" style="display:none">
-    <div class="hint">上传的音频先保存到归档区 <b>audio/</b> 目录，可上传多个用于筛选。格式仅 wav / mp3，单个 &lt;1MB；点「设为锁车声音」会立即挂载车机U盘并写入根目录 LockChime.wav（mp3 自动转 wav）。</div>
+    <div class="hint">上传的音频先保存到归档区 <b>audio/</b> 目录，可上传多个用于筛选。格式仅 wav / mp3，单个 &lt;1MB；点「设为锁车声音」会像文件管理一样立即断开车机读取，把音频写入车机U盘根目录 LockChime.wav（mp3 自动转 wav，覆盖同名文件），写完立即恢复车机导出。</div>
     <div class="tool-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <label class="fm-tool upbtn accent-up" style="margin:0"><svg class="ic"><use href="#i-upload"/></svg>上传音频 (wav/mp3, &lt;1MB)<input type="file" id="audio-file" accept=".wav,.mp3" hidden multiple></label>
       <button class="mini" id="audio-rename-btn" onclick="audioRenameSel()" disabled>重命名</button>
@@ -10310,7 +10310,7 @@ function audioPlay(name) {
 }
 async function setLock(name) {
   const msg = document.getElementById('audio-write-msg');
-  if (msg) msg.textContent = '正在写入车机 U 盘…';
+  if (msg) msg.textContent = '正在断开车机读取并写入 LockChime.wav…';
   try {
     const j = await (await fetch('/api/audio/setlockchime', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -10625,11 +10625,31 @@ function wrapStatusHtml(attached) {
     '<span style="color:#7d8894;font-size:11.5px">断开满 5 分钟无操作会自动恢复车机导出</span><br>' +
     '<button onclick="wrapDetach()" style="display:block;width:100%;background:#e8443f;border:none;color:#fff;border-radius:9px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer;margin-top:10px;box-shadow:0 3px 10px rgba(232,68,63,.35)">✅ 恢复车机导出</button></div>';
 }
+let wrapPoll = null;
 async function wrapAttach() {
   toast('⏳ 正在连接 (车机读取将断开几秒)...');
-  const j = await (await fetch('/api/usb/attach', { method: 'POST' })).json();
-  toast(j.ok ? '✅ 已连接车机U盘' : '❌ ' + j.msg);
-  await refreshWraps();
+  const j = await (await fetch('/api/usb/attach', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wait: true }) })).json();
+  if (!j.ok) { toast('❌ ' + j.msg); refreshWraps(); return; }
+  // 与文件管理一致: 被占用时服务端后台自动重试, 这里轮询等待进度
+  const paint = (job) => {
+    const st = document.getElementById('wraps-status');
+    if (!st) return;
+    st.innerHTML = '<div style="background:#3a2a12;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0b429;line-height:1.6">⏳ ' +
+      (job.message || '正在连接车机 U 盘…') + '（' + (job.elapsed || 0) + ' 秒，车机读取已断开）</div>';
+  };
+  paint(j.job || { state: 'running' });
+  clearInterval(wrapPoll);
+  wrapPoll = setInterval(async () => {
+    let s;
+    try { s = await (await fetch('/api/usb/job', { cache: 'no-store' })).json(); } catch (e) { return; }
+    const job = s.job || {};
+    if (job.state === 'running') { paint(job); return; }
+    clearInterval(wrapPoll); wrapPoll = null;
+    if (job.state === 'done') toast('✅ 已连接车机U盘');
+    else if (job.state === 'error') toast('❌ ' + (job.message || '连接失败'));
+    refreshWraps();
+  }, 1000);
 }
 async function wrapDetach() {
   const j = await (await fetch('/api/usb/detach', { method: 'POST' })).json().catch(() => ({}));
@@ -13838,7 +13858,9 @@ def audio_write_now():
 
 
 def audio_set_lockchime(name):
-    """把归档区音频库里的素材设为锁车音: mp3 先转 wav, 再立即写入车机U盘根目录 LockChime.wav。"""
+    """把归档区音频库里的素材设为锁车音: mp3 先转 wav, 再按文件管理的方式
+    立即断开车机读取, 把 wav 直接写入车机U盘根目录 LockChime.wav (覆盖同名文件),
+    写完立即恢复车机导出。"""
     name = safe_name(name)
     src = os.path.join(AUDIO_LIB, name) if name else ""
     if not name or not os.path.isfile(src):
@@ -13847,7 +13869,6 @@ def audio_set_lockchime(name):
         return {"ok": False, "msg": "仅支持 wav/mp3"}
     os.makedirs(AUDIO_Q, exist_ok=True)
     tmp = os.path.join(AUDIO_Q, ".lockchime.tmp.wav")
-    stage = os.path.join(AUDIO_Q, "LockChime.wav")
     try:
         if name.lower().endswith(".mp3"):
             if not FFMPEG_BIN:
@@ -13857,26 +13878,49 @@ def audio_set_lockchime(name):
                                capture_output=True, text=True, timeout=120)
             if r.returncode != 0 or not os.path.isfile(tmp):
                 return {"ok": False, "msg": "mp3 转 wav 失败"}
-            shutil.move(tmp, stage)
+            source = tmp
         else:
-            shutil.copyfile(src, stage)
-        if os.path.getsize(stage) > 1024 * 1024:
+            source = src
+        if os.path.getsize(source) > 1024 * 1024:
             return {"ok": False, "msg": "转换后超过 1MB, 请换更短或采样率更低的音频"}
-        res = audio_write_now()
+        # 与文件管理一致: 挂载前就立即断开车机读取; 暂时被占用时短暂重试
+        own_mount = not (usb_attached and os.path.ismount(MNT))
+        if own_mount:
+            ok, msg = False, ""
+            for _ in range(8):
+                ok, msg = usb_attach()
+                if ok:
+                    break
+                time.sleep(2)
+            if not ok:
+                return {"ok": False, "msg": "连接车机U盘失败: " + msg}
+        staged = os.path.join(MNT, ".LockChime.wav.tmp")
         try:
-            os.remove(os.path.join(AUDIO_DONE, "LockChime.wav"))
-        except OSError:
-            pass
-        if res.get("ok"):
-            return {"ok": True, "msg": "已立即写入车机U盘根目录: LockChime.wav"}
-        return res
-    finally:
-        for p in (tmp, stage):
+            shutil.copyfile(source, staged)
+            os.replace(staged, os.path.join(MNT, "LockChime.wav"))   # 覆盖同名文件
+            subprocess.run(["sync"], capture_output=True)
+        except OSError as ex:
             try:
-                if os.path.isfile(p):
-                    os.remove(p)
+                os.remove(staged)
             except OSError:
                 pass
+            return {"ok": False, "msg": "写入车机U盘失败: %s" % ex}
+        finally:
+            if own_mount:
+                usb_detach()   # 写完立即恢复车机导出
+        # 清掉队列里遗留的同名文件, 避免后台同步稍后把它覆盖回去
+        for p in (os.path.join(AUDIO_Q, "LockChime.wav"), os.path.join(AUDIO_DONE, "LockChime.wav")):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        return {"ok": True, "msg": "已写入车机U盘根目录: LockChime.wav，车机导出已恢复"}
+    finally:
+        try:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 # 程序缓存 (缩略图/遥测/多路合成临时) 放在安装目录 cache/ 下, 不占数据卡:
 #   thumbs / tel-cache / stitch-tmp。转码缓存单独放在归档区内 (TRANSCODE_DIR,
 #   见文件顶部定义), 与归档视频一一对应, 删归档视频时自动清理对应缓存。
