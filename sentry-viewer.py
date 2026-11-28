@@ -540,7 +540,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.017"
+APP_VERSION = "2026.11.28.018"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -594,9 +594,6 @@ def ota_set_target(repo, branch=""):
         _OTA_RECHECK.update({"running": False, "key": "", "current": 0, "total": 0,
                              "source": "", "message": "", "found": False})
         _OTA_RECHECK["seq"] += 1
-    # 切换仓库/分支后先暂停后台自动更新 (选项保持勾选), 点「立即升级」后恢复
-    if load_settings().get("auto_update", True):
-        save_settings({"auto_paused": True})
     return True, "更新分支已切换为 %s@%s" % (repo, branch)
 
 
@@ -990,7 +987,6 @@ def ota_check(force=False):
            "rollback_ready": os.path.isfile(OTA_BACKUP),
            "repo": ota_target().get("repo", ""), "branch": ota_target().get("branch", ""),
            "auto": load_settings().get("auto_update", True),
-           "auto_paused": load_settings().get("auto_paused", False),
            "auto_checked": AUTO_UPD["last_check"], "auto_msg": AUTO_UPD["last_result"]}
     try:
         j = ota_latest(force)
@@ -1484,8 +1480,6 @@ def ota_apply(force=False):
     顺序刻意做成"全部下载校验 -> 备份 -> 先模块后主程序 -> 记账 -> 重启 + 探活守护":
     任何一步失败都停在"只动了临时文件"的阶段, 线上程序一个字节都不动。"""
     _ota_progress(stage="正在检查更新…")
-    # 用户点了「立即升级」: 恢复此前因切换仓库/分支而暂停的自动更新
-    save_settings({"auto_paused": False})
     try:
         j = ota_latest(True)
     except Exception as ex:
@@ -1827,7 +1821,7 @@ def _retention_default(name, default):
 
 def load_settings():
     box_days = _retention_default("TSF_BOX_KEEP_DAYS", 14)
-    d = {"auto_update": True, "auto_paused": False, "ui_style": "default", "brand_name": "", "brand_logo": "",
+    d = {"auto_update": True, "ui_style": "default", "brand_name": "", "brand_logo": "",
          "remote_quality": "480p", "amap_key": "", "addr_format": "",
          "recent_roll_min": _retention_default("TSF_RECENT_ROLL_MIN", 60),
          "recent_keep_min": _retention_default("TSF_RECENT_KEEP_MIN", 60),
@@ -1849,7 +1843,6 @@ def load_settings():
         if isinstance(j, dict):
             if "auto_update" in j:
                 d["auto_update"] = bool(j["auto_update"])
-            d["auto_paused"] = bool(j.get("auto_paused", False))
             st = str(j.get("ui_style") or "")
             if st in ("default", "pixel"):
                 d["ui_style"] = st
@@ -1975,7 +1968,6 @@ def auto_update_loop():
         try:
             conf = load_settings()
             auto = bool(conf.get("auto_update", True))
-            paused = bool(conf.get("auto_paused", False))
             if time.time() < AUTO_UPD["next_try"]:
                 time.sleep(60)
                 continue
@@ -1996,11 +1988,6 @@ def auto_update_loop():
                 # 只检查不安装: 在「更新」页提示, 用户可手动升级
                 AUTO_UPD["last_result"] = "发现 v%s, 已勾选自动更新后可自动安装" % j.get("latest")
                 AUTO_UPD["next_try"] = time.time() + 1800
-                time.sleep(60)
-                continue
-            if paused:
-                AUTO_UPD["last_result"] = "发现 v%s, 自动安装已暂停, 点「立即升级」安装" % j.get("latest")
-                AUTO_UPD["next_try"] = time.time() + 600
                 time.sleep(60)
                 continue
             AUTO_UPD["last_result"] = "发现 v%s, 等待空闲后自动升级" % j.get("latest")
@@ -9971,15 +9958,6 @@ function otaBranchValue() {
     ? document.getElementById('upd-branch-custom').value
     : sel.value).trim();
 }
-async function markAutoPaused() {
-  const cb = document.getElementById('upd-auto'), el = document.getElementById('upd-autohint');
-  if (!cb || !el || !cb.checked) return;
-  try {
-    await fetch('/api/ota/auto', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ on: true, paused: true }) });
-    el.innerHTML = '已暂停自动更新：切换分支后不再后台升级，点击「立即升级」后自动恢复';
-  } catch (e) {}
-}
 async function otaSaveTarget() {
   const repo = otaRepoFixed, branch = otaBranchValue();
   const msg = document.getElementById('upd-msg');
@@ -9989,7 +9967,7 @@ async function otaSaveTarget() {
     const j = await (await fetch('/api/ota/target', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repo, branch }) })).json();
     msg.textContent = (j.ok ? '✅ ' : '❌ ') + t(j.msg || '');
-    if (j.ok) { await markAutoPaused(); await otaCheck(true); }
+    if (j.ok) { await otaCheck(true); }
   } catch (e) { msg.textContent = t('切换失败') + ': ' + e; }
 }
 async function otaCheck(force, silent) {
@@ -10072,7 +10050,6 @@ function renderAutoUpdate(j) {
   let s = j.auto
     ? '已开启：定期自动检查更新，发现新版本且没人看视频时自动安装'
     : '已关闭自动安装：仍会定期检查并提示新版本，可点「检查更新」后手动升级';
-  if (j.auto && j.auto_paused) s = '已暂停自动更新：切换分支后不再后台升级，点击「立即升级」后自动恢复';
   if (j.auto) {
     const when = j.auto_checked ? new Date(j.auto_checked * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
     if (when || j.auto_msg) s += '<br>上次 ' + (when ? when + ' · ' : '') + (j.auto_msg || '');
@@ -10089,7 +10066,6 @@ async function autoLoad() {
     let txt = s.auto_update
       ? '已开启：定期自动检查更新，发现新版本且没人看视频时自动安装'
       : '已关闭自动安装：仍会定期检查并提示新版本，可点「检查更新」后手动升级';
-    if (s.auto_update && s.auto_paused) txt = '已暂停自动更新：切换分支后不再后台升级，点击「立即升级」后自动恢复';
     const when = s.auto_checked ? new Date(s.auto_checked * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
     if (s.auto_update && (when || s.auto_msg)) txt += '<br>上次 ' + (when ? when + ' · ' : '') + (s.auto_msg || '');
     el.innerHTML = txt;
@@ -10100,7 +10076,7 @@ async function setAutoUpdate(on) {
   try {
     const j = await (await fetch('/api/ota/auto', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ on: !!on, paused: false })
+      body: JSON.stringify({ on: !!on })
     })).json();
     if (!j.ok) throw new Error(j.msg || '保存失败');
     cb.checked = on;
@@ -23284,7 +23260,6 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/settings":
             saved = load_settings()
             self._json({"ok": True, "auto_update": saved.get("auto_update", True),
-                        "auto_paused": saved.get("auto_paused", False),
                         "ui_style": saved.get("ui_style", "default"),
                         "brand_name": brand_name(), "brand_default": BRAND_NAME_DEFAULT,
                         "brand_logo": saved.get("brand_logo", ""),
@@ -24097,14 +24072,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "msg": "参数错误"}, 400)
                 return
             on = bool(body.get("on"))
-            paused = body.get("paused")
-            patch = {"auto_update": on}
-            if paused is not None:
-                patch["auto_paused"] = bool(paused)
-            save_settings(patch)
-            if on and not patch.get("auto_paused"):
+            save_settings({"auto_update": on})
+            if on:
                 AUTO_UPD["next_try"] = 0        # 刚打开就尽快检查一次, 不用等下一轮
-            self._json({"ok": True, "auto": on, "paused": bool(load_settings().get("auto_paused", False))})
+            self._json({"ok": True, "auto": on})
             return
         if path == "/api/font/dl":
             # 一键从官方 google/fonts 装中文字体 (17MB, 多镜像串行重试)
