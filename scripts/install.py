@@ -123,6 +123,7 @@ class Installer:
         self.device = {}
         self.repaired = False
         self.upgrade = False
+        self.ffmpeg_degraded = False
         self.runtime = self.source / 'runtime' if (self.source / 'runtime').is_dir() else None
 
     def runtime_selftest(self):
@@ -677,7 +678,7 @@ class Installer:
             ok, _caps = self.ffmpeg_ok(str(binary))
             if ok:
                 return {'ffmpeg': str(binary), 'ffprobe': str(probe)}
-        print('固件自带的 FFmpeg 不完整（缺 HEVC 解码或 H.264 编码），'
+        print('当前 FFmpeg 未通过完整能力校验（HEVC/H.264/MP4/滤镜），'
               '正在通过加速地址下载 aarch64 静态构建并安装到 /usr/bin（60 秒无进度自动切换备用地址）', flush=True)
         target.mkdir(parents=True, exist_ok=True)
         archive = Path(tempfile.mkdtemp(prefix='tsf-ff-', dir='/tmp')) / 'ffmpeg.tar.xz'
@@ -731,9 +732,21 @@ class Installer:
             resolved['ffprobe'] = self.resolve_binary('ffprobe') or resolved['ffprobe']
             ok, caps = self.ffmpeg_ok(resolved['ffmpeg'])
         if not ok:
-            print('FFmpeg 能力不足（HEVC=%s libx264=%s scale=%s mp4=%s），改用静态构建'
-                  % (caps['hevc'], caps['x264'], caps['scale'], caps['mp4']), flush=True)
-            resolved = self.install_static_ffmpeg()
+            labels = {'hevc': 'HEVC 解码', 'mp4': 'MP4 封装', 'scale': 'scale', 'pad': 'pad',
+                      'fps': 'fps', 'xstack': 'xstack', 'setsar': 'setsar', 'subtitles': 'subtitles'}
+            missing = [label for key, label in labels.items() if not caps.get(key)]
+            if not (caps.get('x264') or caps.get('v4l2')):
+                missing.insert(1 if missing else 0, 'H.264 编码（libx264/h264_v4l2m2m）')
+            print('FFmpeg 能力不足（缺少：%s），尝试静态构建' % '、'.join(missing), flush=True)
+            try:
+                resolved = self.install_static_ffmpeg()
+            except InstallError as exc:
+                # 网络问题不能拖垮整个云哨兵安装：保留系统 FFmpeg，网页会持续显示修复入口。
+                self.ffmpeg_degraded = True
+                print('警告：静态 FFmpeg 下载或校验失败：%s\n'
+                      '将继续安装现有程序；HEVC 抽帧、转码或水印功能可能暂不可用，'
+                      '联网后可执行 sh install.sh install 重新修复。' % exc, flush=True)
+                return resolved
         filters = run([resolved['ffmpeg'], '-hide_banner', '-filters'], timeout=60)
         for required in ('scale', 'pad', 'fps', 'xstack', 'setsar', 'subtitles'):
             if not re.search(r'\s' + required + r'\s', filters):
@@ -789,7 +802,9 @@ class Installer:
         if repair:
             # 先把 FFmpeg 配好再谈安装: 这不是"用到时才发现"的可选项
             resolved = self.provision_ffmpeg()
-            print('FFmpeg 就绪：%s / %s' % (resolved['ffmpeg'], resolved['ffprobe']), flush=True)
+            print('%s：%s / %s' % ('FFmpeg 可用（能力不完整，安装继续）'
+                                   if self.ffmpeg_degraded else 'FFmpeg 就绪',
+                                   resolved['ffmpeg'], resolved['ffprobe']), flush=True)
         state = self.existing_install()
         self.upgrade = state == 'upgrade'
         if state == 'same':
@@ -797,7 +812,9 @@ class Installer:
                 self.update_dependency_paths(resolved)
                 try:
                     run([str(self.path('/etc/init.d/tesla-viewer')), 'restart'], timeout=90)
-                    print('已重启 tesla-viewer，缩略图与转码恢复')
+                    print('已重启 tesla-viewer；' +
+                          ('FFmpeg 能力仍不完整，请联网后重新修复' if self.ffmpeg_degraded
+                           else '缩略图与转码恢复'))
                 except InstallError as exc:
                     print('重启服务失败，请手动执行 /etc/init.d/tesla-viewer restart：%s' % exc)
                 self.repaired = True
@@ -888,21 +905,28 @@ class Installer:
             run([binary, '-version'])
             self.device[name] = binary
         filters = run([self.device['ffmpeg'], '-hide_banner', '-filters'])
-        for required in ('scale', 'pad', 'fps', 'xstack', 'setsar', 'subtitles'):
-            if not re.search(r'\s' + required + r'\s', filters):
-                raise InstallError('FFmpeg 缺少滤镜：' + required)
+        missing_filters = [name for name in ('scale', 'pad', 'fps', 'xstack', 'setsar', 'subtitles')
+                           if not re.search(r'\s' + name + r'\s', filters)]
+        if missing_filters:
+            if not self.ffmpeg_degraded:
+                raise InstallError('FFmpeg 缺少滤镜：' + '、'.join(missing_filters))
+            print('警告：FFmpeg 缺少滤镜 %s；安装继续，相关转码/水印功能暂不可用'
+                  % '、'.join(missing_filters), flush=True)
         caps = self.ffmpeg_caps(self.device['ffmpeg'])
-        if not (caps['x264'] or caps['v4l2']):
+        encoder = 'libx264' if caps['x264'] else ('h264_v4l2m2m' if caps['v4l2'] else '')
+        if not encoder and not self.ffmpeg_degraded:
             raise InstallError('FFmpeg 缺少 H.264 编码器（libx264 或 h264_v4l2m2m）；'
                                '请执行 `%s`（--apply 安装时会自动补装完整构建）'
                                % self.pkg_hint(('ffmpeg', 'libx264')))
-        encoder = 'libx264' if caps['x264'] else 'h264_v4l2m2m'
         print('FFmpeg H.264 编码器：%s；HEVC 解码：%s'
-              % (encoder, '可用' if caps['hevc'] else '缺失（缩略图/转码会失败，--apply 时会自动补装）'),
+              % (encoder or '不可用', '可用' if caps['hevc'] else '缺失（抽帧/转码暂不可用）'),
               flush=True)
-        run([self.device['ffmpeg'], '-v', 'error', '-f', 'lavfi', '-i',
-             'color=size=64x64:rate=1', '-frames:v', '1', '-c:v', encoder,
-             '-f', 'null', '-'])
+        if encoder:
+            run([self.device['ffmpeg'], '-v', 'error', '-f', 'lavfi', '-i',
+                 'color=size=64x64:rate=1', '-frames:v', '1', '-c:v', encoder,
+                 '-f', 'null', '-'])
+        elif self.ffmpeg_degraded:
+            print('警告：没有 H.264 编码器，本次跳过编码自检；安装后可联网重新修复', flush=True)
         if not self.upgrade:
             with socket.socket() as probe:
                 try:
