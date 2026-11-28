@@ -540,7 +540,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.016"
+APP_VERSION = "2026.11.28.017"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -567,7 +567,7 @@ def ota_target():
         branch = branch or str(j.get("branch") or "").strip()
     except Exception:
         pass
-    if branch == "main":   # 旧版默认分支, 仓库已把 main 改名为 F50
+    if branch in ("main", "master"):   # 仓库已把 main 改名为 F50 且没有 master, 旧配置自动回落到 F50
         branch = OTA_DEFAULT_BRANCH
     _OTA_TGT.update({"repo": OTA_DEFAULT_REPO, "branch": branch or OTA_DEFAULT_BRANCH})
     return _OTA_TGT
@@ -9938,7 +9938,7 @@ async function userSave() {
 let otaInfo = null;
 let otaRecheckTimer = 0, otaCheckSeq = 0;
 function esc(s) { return String(s == null ? '' : s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
-const OTA_BRANCHES = ['F50', 'master', 'dev'];
+const OTA_BRANCHES = ['F50', 'dev'];
 let otaRepoFixed = 'jiaoting/tesla-sentry-f50';
 async function otaLoadTarget() {
   try {
@@ -9995,7 +9995,7 @@ async function otaSaveTarget() {
 async function otaCheck(force, silent) {
   const seq = ++otaCheckSeq;
   clearTimeout(otaRecheckTimer);
-  if (!silent) otaLoadTarget();
+  if (!silent) await otaLoadTarget();   // 点击检查/更新后自动刷新分支选项
   const tag = document.getElementById('upd-tag'), msg = document.getElementById('upd-msg');
   if (!silent) {
     tag.className = 'updtag'; tag.textContent = t('检查中…');
