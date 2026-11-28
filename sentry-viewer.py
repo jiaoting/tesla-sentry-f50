@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.29.004"
+APP_VERSION = "2026.11.29.005"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -6481,7 +6481,7 @@ async function cachePreviewFiles(files, slot, offset, nextClip) {
     }
     if (!(source > 0)) continue;
     const end = Math.max(1, Math.ceil((file.duration - .08) / source));
-    const start = Math.min(end, Math.max(1, Math.ceil(previewLeadForQuality() * baseRate / source)));
+    const start = Math.min(end, Math.max(nextClip ? 6 : 1, Math.ceil(previewLeadForQuality() * baseRate / source)));
     const index = Math.floor(offset / source);
     jobs.push({file, end, start, index});
   }
@@ -20986,7 +20986,7 @@ class SentryPreviewJobs:
 
 
 def run_variant(cmd, wanted, jobs=None, key=None, preferred=None, hd_preview=False, startup_boost=False,
-                err_path=None, cores=None):
+                err_path=None, cores=None, part_handle=None):
     def active_cores():
         """cores=None 时完全跟随温控档位；指定时只在正常温控档(3)下放开，
         温度升高自动回落到 2/1/0 核。"""
@@ -21042,6 +21042,9 @@ def run_variant(cmd, wanted, jobs=None, key=None, preferred=None, hd_preview=Fal
         finally:
             if err_file is not None:
                 err_file.close()
+        if part_handle is not None:
+            with _active_part_lock:
+                part_handle[0] = proc
         deadline = time.monotonic() + 900
     parked = False
     try:
@@ -21049,7 +21052,7 @@ def run_variant(cmd, wanted, jobs=None, key=None, preferred=None, hd_preview=Fal
             proc.send_signal(signal.SIGCONT)
         while time.monotonic() < deadline:
             try:
-                return proc.wait(timeout=.45) == 0
+                return proc.wait(timeout=.12) == 0
             except subprocess.TimeoutExpired:
                 count = active_cores()
                 if wanted is not None and (not count or not wanted()):
@@ -21067,6 +21070,10 @@ def run_variant(cmd, wanted, jobs=None, key=None, preferred=None, hd_preview=Fal
                     mask = new_mask
         return False
     finally:
+        if part_handle is not None:
+            with _active_part_lock:
+                if part_handle[0] is proc:
+                    part_handle[0] = None
         if not parked and proc.poll() is None:
             proc.kill()
             proc.wait()
@@ -21324,6 +21331,21 @@ _part_waiters = []
 PART_PROGRESS = {}
 PART_PROGRESS_LOCK = threading.Lock()
 
+# 当前正在运行的分片转码 ffmpeg 进程; 可见画面请求可立即终止它以抢占转码资源, 保证跳转 1 秒内起播。
+_active_part_proc = [None]
+_active_part_lock = threading.Lock()
+
+
+def _preempt_active_part():
+    """立即终止当前分片转码进程, 让更高优先级(可见画面)请求马上拿到转码槽位。"""
+    with _active_part_lock:
+        proc = _active_part_proc[0]
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
 
 def _encode_preview_parts(fp, quality, prefix, index, duration, transport, ahead, connected, warm=False,
                           startup_boost=False, bulk=False):
@@ -21411,7 +21433,8 @@ def _encode_preview_parts(fp, quality, prefix, index, duration, transport, ahead
         next_middle = middle_cores[(middle_index + 1) % len(middle_cores)]
         err_path = prefix + "%d-%d.err" % (os.getpid(), threading.get_ident())
         complete = run_variant(cmd + ["-y", tmp], connected, preferred=(middle, 0, 1, 2, 3, next_middle), hd_preview=fast_hd,
-                               startup_boost=fast_hd and startup_boost, err_path=err_path, cores=enc_cores)
+                               startup_boost=fast_hd and startup_boost, err_path=err_path, cores=enc_cores,
+                               part_handle=_active_part_proc)
         try:
             with open(err_path, "rb") as stream:
                 lines = stream.read()[-600:].decode("utf-8", "ignore").strip().splitlines()
@@ -21470,13 +21493,21 @@ def preview_part(fp, quality, index, duration, transport, ahead, connected, warm
     if data:
         return data
     deadline = time.monotonic() + 24
-    priority = 3 if cache_only else (0 if not ahead else (1 if prime else 2))
+    # cache_only+warm = 下一片段开头预热, 与当前预读同级(2)以保证切换前转好; 其余 cache_only 后台补缓存最低(3)。
+    priority = 3 if (cache_only and not warm) else (0 if not ahead else (1 if prime else 2))
     ticket = (priority, object())
+    preempt = False
     with _part_queue_changed:
-        # Visible frames and player read-ahead outrank cache-only work.
-        place = next((i for i, (queued_priority, _) in enumerate(_part_waiters) if queued_priority > priority), len(_part_waiters))
-        _part_waiters.insert(place, ticket)
+        # 可见画面 (priority 0) 直接插队到队首, 并立即终止正在转码的进程, 全力保障播放位置 1 秒内起播。
+        if priority == 0:
+            _part_waiters.insert(0, ticket)
+            preempt = True
+        else:
+            place = next((i for i, (queued_priority, _) in enumerate(_part_waiters) if queued_priority > priority), len(_part_waiters))
+            _part_waiters.insert(place, ticket)
         _part_queue_changed.notify_all()
+    if preempt:
+        _preempt_active_part()
 
     def first_in_queue():
         with _part_queue_changed:
