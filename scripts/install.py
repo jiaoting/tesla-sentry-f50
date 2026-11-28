@@ -27,12 +27,9 @@ SCRIPTS = ('mkexfat.py', 'tesla-gadget.sh', 'tesla-usb-start.sh', 'tesla-img.sh'
            'usb-selfheal.sh', 'tsf-storage.sh', 'tsf-maintenance.sh')
 MARKER = 'installation.json'
 FFMPEG_DOWNLOAD_URLS = (
-    'https://gh-proxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/'
-    'ffmpeg-master-latest-linuxarm64-gpl.tar.xz',
-    'https://gh-proxy.org/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/'
-    'ffmpeg-master-latest-linuxarm64-gpl.tar.xz',
-    'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/'
-    'ffmpeg-master-latest-linuxarm64-gpl.tar.xz',
+    # 固定版本的 aarch64 全静态构建(无动态解释器, 可在 OpenWrt musl 上直接运行);
+    # 不要用 BtbN 的 linuxarm64 包, 它是 glibc 动态链接, 在 F50 上会报“不可执行”。
+    'https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-arm64-static.tar.xz',
 )
 FFMPEG_STATE = '/etc/tesla-sentry-ffmpeg.json'
 

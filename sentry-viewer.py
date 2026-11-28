@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.029"
+APP_VERSION = "2026.11.28.030"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -1391,10 +1391,9 @@ def _install_dep_packages(kind, manager):
 
 
 FFMPEG_DOWNLOAD_URLS = (
-    "https://gh-proxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
-    "ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
-    "https://gh-proxy.org/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
-    "ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
+    # 固定版本的 aarch64 全静态构建; BtbN 的 linuxarm64 包是 glibc 动态链接,
+    # 在 OpenWrt musl 上无法执行(表现为“文件存在但不可执行”)。
+    "https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-arm64-static.tar.xz",
 )
 FFMPEG_STATE = os.environ.get("TSF_FFMPEG_STATE", "/etc/tesla-sentry-ffmpeg.json")
 _FFMPEG_PACKAGE_LOCK = threading.Lock()

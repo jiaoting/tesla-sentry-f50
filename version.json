@@ -1,5 +1,5 @@
 {
-  "version": "2026.11.28.029",
+  "version": "2026.11.28.030",
   "date": "2026-11-28",
   "files": [
     "storage_allocation.py",
@@ -7,14 +7,16 @@
     "tesla-live-sync.py"
   ],
   "ffmpeg_package": {
-    "version": "N-129333-g7fdb4c2341",
+    "version": "7.0.2",
     "architecture": "aarch64",
-    "path": "vendor/ffmpeg/ffmpeg-N-129333-g7fdb4c2341-aarch64-gpl.tar.xz",
-    "size": 54602376,
-    "sha256": "75497c33ebc67e4f9e5837efae624f59d9fca3d9b486b10072b6db54715ecf12",
-    "source_url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz"
+    "path": "vendor/ffmpeg/ffmpeg-7.0.2-arm64-static.tar.xz",
+    "size": 19337412,
+    "sha256": "f4149bb2b0784e30e99bdda85471c9b5930d3402014e934a5098b41d0f7201b1",
+    "source_url": "https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-arm64-static.tar.xz"
   },
   "notes": [
+    "FFmpeg 依赖换成固定版本的 aarch64 全静态构建（ffmpeg/ffprobe 各约 50 MiB）：无动态解释器，OpenWrt musl 上可直接执行；替换原来 100 多 MiB、依赖 glibc 动态库导致“显示不可执行”的构建",
+    "安装器与网页修复改为下载/校验这个具体文件，不再拉取 GitHub 的 latest 构建；随包文件校验失败时才按固定地址补下",
     "修复全新安装报“安装未完成：[Errno 2] No such file or directory: '/usr/bin/ffmpeg'”：--ffmpeg 指定的路径不存在/不可执行、或系统 ffmpeg 缺依赖库无法执行时，不再直接中断安装，改为重新查找并自动安装",
     "安装器执行外部命令失败时给出可读提示（哪个命令、什么原因），降级安装不再因 ffmpeg 缺失而中止",
     "—— 以下为 2026.11.28.028 更新 ——",
