@@ -540,7 +540,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.023"
+APP_VERSION = "2026.11.28.024"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -3494,6 +3494,19 @@ body.settings-open { overflow:hidden; }
   transform-origin:top left; transform:rotate(90deg) translateY(-100%);
   z-index:1000;
 }
+/* iOS 强制旋转时系统媒体查询仍是竖屏，单独保证所有驾驶信息图标处于同一行。 */
+.player.force-landscape .telhud {
+  flex:1 0 100%; width:100%; max-width:100%; margin:4px 0 0;
+  flex-wrap:nowrap; justify-content:flex-start; overflow-x:auto; scrollbar-width:none;
+  -webkit-overflow-scrolling:touch;
+}
+.player.force-landscape .telhud::-webkit-scrollbar { display:none; }
+.player.force-landscape .telhud .th-line {
+  display:flex; flex:0 0 auto; width:auto; min-width:max-content; flex-wrap:nowrap;
+  align-items:center; justify-content:flex-start; gap:6px;
+}
+.player.force-landscape .telhud .th-place { flex:0 0 auto; }
+.player.force-landscape .telhud #th-loc { white-space:nowrap; }
 @media (max-width:1199px) {
   .app-header { padding-inline:18px; gap:10px; }
   .app-header .tabs { gap:6px; }
