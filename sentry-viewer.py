@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.29.001"
+APP_VERSION = "2026.11.29.002"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -2549,7 +2549,7 @@ body.watching { overscroll-behavior:none; }
 /* 视频右上方遥测：与摄像头/全览按钮同一行，顺序固定，便于各播放页统一识别。 */
 .video-toolbar { order:-1; display:flex; align-items:center; flex-wrap:wrap; gap:10px; width:100%; max-width:1200px; margin:0 auto; }
 .player .video-toolbar .cambar { order:0; flex:0 0 auto; width:auto; max-width:none; margin:0; }
-.telhud { display:none; align-items:center; justify-content:flex-end; gap:10px; flex:0 0 auto;
+.telhud { display:none; position:relative; align-items:center; justify-content:flex-end; gap:10px; flex:0 0 auto;
   width:max-content; max-width:100%; margin:0 0 0 auto; padding:6px 9px;
   border-radius:10px; background:var(--panel); border:1px solid var(--line);
   color:var(--text); font-variant-numeric:tabular-nums; }
@@ -2602,6 +2602,8 @@ body.watching { overscroll-behavior:none; }
 .th-fold:hover { color:var(--text); }
 .th-fold-ic { width:16px; height:16px; flex:none; transition:transform .2s; }
 .th-fold[aria-expanded="true"] .th-fold-ic { transform:rotate(180deg); }
+/* 行驶数据条整条折叠按钮: 仅移动端显示, 桌面端隐藏 */
+.th-collapse { display:none; }
 .telmore { display:none; flex:0 0 auto; width:max-content; max-width:100%; margin-left:auto; padding:10px 12px; border:1px solid var(--line); border-radius:6px; background:var(--panel); }
 .telmore.open { display:block; }
 #th-rows { display:block; color:var(--text); font-size:12px; line-height:1.7; }
@@ -2630,6 +2632,23 @@ body.watching { overscroll-behavior:none; }
   .telhud .th-acct { font-size:11px; min-width:28px; font-weight:800; }
   .th-fold { width:32px; min-width:32px; padding:0; }
   .th-fold .th-fold-t { display:none; }
+  /* 移动端: 行驶数据条可整条折叠为一条细线, 节约上下空间, 避免突然出现顶动画面控制造成误触 */
+  .th-collapse { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; min-width:28px;
+    padding:0; border:1px solid var(--line); border-radius:8px; background:var(--panel2); color:var(--muted);
+    cursor:pointer; flex:none; }
+  .th-collapse:hover { color:var(--text); }
+  .th-collapse-ic { width:16px; height:16px; flex:none; transition:transform .2s; }
+  .th-collapse[aria-expanded="false"] .th-collapse-ic { transform:rotate(180deg); }
+  .telhud.collapsed { background:transparent !important; border-color:transparent !important; padding:0 !important; gap:0; }
+  .telhud.collapsed .th-line-main { display:none !important; }
+  .telhud.collapsed .th-line-rest { display:flex; flex:1 0 100%; width:100%; height:24px; min-height:24px;
+    padding:0; margin:2px 0 0; position:relative; justify-content:center; align-items:center; background:transparent; border:0; }
+  .telhud.collapsed .th-line-rest::before { content:""; position:absolute; left:0; right:0; top:50%; height:3px;
+    background:var(--line2); border-radius:2px; transform:translateY(-50%); }
+  .telhud.collapsed .th-line-rest > * { display:none !important; }
+  .telhud.collapsed .th-line-rest > .th-collapse { display:inline-flex !important; position:absolute; inset:0; width:100%; height:100%;
+    background:transparent; border:0; border-radius:3px; }
+  .telhud.collapsed .th-collapse-ic { display:none; }
   .telhud.wrap .th-line-main { flex-wrap:wrap; row-gap:6px; }
   .th-place { max-width:none; flex:1 1 auto; align-items:flex-start; line-height:1.35; }
   .th-place svg { margin-top:1px; }
@@ -4094,6 +4113,7 @@ body.settings-open { overflow:hidden; }
           <div class="th-acc" id="th-acc" title="前后加速度"><span class="th-bar"><i id="th-bar"></i></span><span class="th-acct" id="th-acct">定速</span></div>
           <span class="th-place" title="地址定位"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0z"/><circle cx="12" cy="10" r="2.5"/></svg><span id="th-loc">—</span></span>
           <button class="th-fold" id="th-fold" type="button" onclick="toggleTelRows()" aria-expanded="false" aria-controls="telmore" aria-label="展开详细数据" title="详细数据"><svg class="th-fold-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="th-fold-t">详情</span></button>
+          <button class="th-collapse" id="th-collapse" type="button" onclick="toggleTelhudCollapse()" aria-expanded="true" aria-label="收起行驶数据" title="收起行驶数据"><svg class="th-collapse-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 14.5l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </div>
       </div>
       <div class="telmore" id="telmore"><div id="th-rows"></div></div>
@@ -6935,6 +6955,7 @@ window.addEventListener('resize', syncTelWidth);
 function layoutTelhud() {
   const hud = document.getElementById('telhud');
   if (!hud) return;
+  if (hud.classList.contains('collapsed')) return;
   const wasWrap = hud.classList.contains('wrap');
   hud.classList.remove('wrap');
   if (!hud.classList.contains('show')) return;
@@ -7125,6 +7146,48 @@ function toggleTelRows() {
   layoutPlayer();
   if (open) requestAnimationFrame(syncTelWidth);
 }
+/* 移动端: 折叠/展开整条行驶数据条。折叠后只剩一条细线, 节约上下空间避免顶动画面控制。 */
+function toggleTelhudCollapse() {
+  const hud = byId('telhud');
+  if (!hud) return;
+  const collapsed = !hud.classList.contains('collapsed');
+  hud.classList.toggle('collapsed', collapsed);
+  const btn = byId('th-collapse');
+  if (btn) {
+    btn.setAttribute('aria-expanded', String(!collapsed));
+    btn.setAttribute('aria-label', collapsed ? '展开行驶数据' : '收起行驶数据');
+    btn.title = collapsed ? '展开行驶数据' : '收起行驶数据';
+  }
+  if (collapsed) {
+    // 折叠整条时一并收起「详细数据」面板
+    const more = byId('telmore');
+    if (more) more.classList.remove('open');
+    const fold = byId('th-fold');
+    if (fold) {
+      fold.setAttribute('aria-expanded', 'false');
+      const t = fold.querySelector('.th-fold-t');
+      if (t) t.textContent = '详情';
+    }
+  }
+  try { localStorage.setItem('tsf-telhud-collapsed', collapsed ? '1' : '0'); } catch (e) {}
+  layoutPlayer();
+  if (!collapsed) requestAnimationFrame(() => { layoutTelhud(); syncTelWidth(); });
+}
+(function initTelhudCollapse() {
+  const hud = byId('telhud');
+  if (!hud) return;
+  let saved = null;
+  try { saved = localStorage.getItem('tsf-telhud-collapsed'); } catch (e) {}
+  // 未设置过: 移动端默认折叠, 避免行驶条突然跳出顶动画面控制造成误触; 用户选择后记住
+  const collapsed = saved === null ? matchMedia('(max-width:640px)').matches : saved === '1';
+  if (collapsed) hud.classList.add('collapsed');
+  const btn = byId('th-collapse');
+  if (btn) {
+    btn.setAttribute('aria-expanded', String(!collapsed));
+    btn.setAttribute('aria-label', collapsed ? '展开行驶数据' : '收起行驶数据');
+    btn.title = collapsed ? '展开行驶数据' : '收起行驶数据';
+  }
+})();
 
 /* ---------- 导出视频水印 (与遥测面板同款) ---------- */
 function telFrameAt(t) {
