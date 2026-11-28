@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.29.003"
+APP_VERSION = "2026.11.29.004"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -2641,14 +2641,15 @@ body.watching { overscroll-behavior:none; }
   .th-collapse[aria-expanded="false"] .th-collapse-ic { transform:rotate(180deg); }
   .telhud.collapsed { background:transparent !important; border-color:transparent !important; padding:0 !important; gap:0; }
   .telhud.collapsed .th-line-main { display:none !important; }
-  .telhud.collapsed .th-line-rest { display:flex; flex:1 0 100%; width:100%; height:24px; min-height:24px;
+  .telhud.collapsed .th-line-rest { display:flex; flex:1 0 100%; width:100%; height:30px; min-height:30px;
     padding:0; margin:2px 0 0; position:relative; justify-content:center; align-items:center; background:transparent; border:0; }
-  .telhud.collapsed .th-line-rest::before { content:""; position:absolute; left:0; right:0; top:50%; height:3px;
-    background:var(--line2); border-radius:2px; transform:translateY(-50%); }
+  /* 折叠后保留一条可见细线 + 居中向下箭头, 明确提示可点击展开 (此前细线与图标都几乎不可见) */
+  .telhud.collapsed .th-line-rest::before { content:""; position:absolute; left:0; right:0; top:50%; height:4px;
+    background:var(--muted2); border-radius:3px; transform:translateY(-50%); }
   .telhud.collapsed .th-line-rest > * { display:none !important; }
   .telhud.collapsed .th-line-rest > .th-collapse { display:inline-flex !important; position:absolute; inset:0; width:100%; height:100%;
-    background:transparent; border:0; border-radius:3px; }
-  .telhud.collapsed .th-collapse-ic { display:none; }
+    background:transparent; border:0; border-radius:4px; }
+  .telhud.collapsed .th-collapse-ic { display:block; width:18px; height:18px; color:var(--text); opacity:.85; }
   .telhud.wrap .th-line-main { flex-wrap:wrap; row-gap:6px; }
   .th-place { max-width:none; flex:1 1 auto; align-items:flex-start; line-height:1.35; }
   .th-place svg { margin-top:1px; }
@@ -3246,7 +3247,7 @@ body.watching { overflow:hidden; }
 .player .ptitle { color:var(--text); font-size:14px; font-weight:600; }
 .player .pscroll { padding:16px clamp(12px,3vw,32px) max(18px,env(safe-area-inset-bottom)); gap:10px; }
 .player .vwrap { order:0; border-radius:8px; }
-.player .vgrid { background:#101215; touch-action:none; -webkit-touch-callout:none; user-select:none; -webkit-user-select:none; transform-origin:0 0; will-change:transform; }
+.player .vgrid { background:#101215; touch-action:pan-y; -webkit-touch-callout:none; user-select:none; -webkit-user-select:none; transform-origin:0 0; will-change:transform; }
 .player .vgrid.loading { display:flex; align-items:flex-end; justify-content:flex-end; gap:10px; min-height:26vh; padding:12px; color:#d0d6dc; }
 .player .vgrid.loading.load-error { align-items:center; justify-content:center; }
 .player .vcell { aspect-ratio:auto; min-width:0; min-height:0; }
@@ -8521,6 +8522,12 @@ byId('vgrid').addEventListener('pointerdown', event => {
   if (pinchActive) return;   // 双指缩放进行中, 不启动长按快进/快退
   suppressPictureClick = false;
   const rect = byId('vgrid').getBoundingClientRect();
+  /* 画面左右两侧边缘留给页面上下滚动: 此区域不触发单击播放/暂停与长按快进快退, 避免误触。
+     中央区域仍可单击播放/暂停、左半长按快退、右半长按快进。 */
+  const edge = Math.max(40, Math.min(64, rect.width * 0.14));
+  if (event.clientX < rect.left + edge || event.clientX > rect.right - edge) {
+    suppressPictureClick = true; return;
+  }
   const dir = (event.clientX - rect.left) < rect.width / 2 ? -1 : 1;
   clearTimeout(pictureHoldTimer);
   pictureHoldTimer = setTimeout(() => {
