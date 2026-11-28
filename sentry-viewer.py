@@ -538,7 +538,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.009"
+APP_VERSION = "2026.11.28.010"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -2650,6 +2650,20 @@ select.ninput { cursor:pointer; }
 .item .fm-chk { width:17px; height:17px; flex:0 0 auto; accent-color:var(--accent); cursor:pointer; }
 .item.fm-sel { box-shadow:inset 0 0 0 1px var(--accent); }
 .item .fm-mini { padding:7px 10px; min-height:32px; min-width:32px; }
+.stage-item { flex-wrap:wrap; }
+.stage-item .stage-name { min-width:130px; }
+.stage-preview-audio { width:220px; max-width:100%; height:34px; flex:0 1 220px; }
+.stage-preview-image { width:96px; height:64px; flex:0 0 auto; object-fit:contain; background:#0d1117; border:1px solid var(--line2); border-radius:8px; cursor:zoom-in; }
+.stage-state { min-width:48px; color:var(--muted); white-space:nowrap; }
+.stage-state.uploaded { color:#4cc38a; }
+.stage-item .stage-upload { min-width:70px; }
+.stage-item button:disabled,.tool-actions button:disabled { opacity:.5; cursor:default; }
+@media (max-width:600px) {
+  .stage-item .stage-name { min-width:100px; }
+  .stage-preview-audio { order:5; width:100%; flex-basis:100%; }
+  .stage-preview-image { width:72px; height:54px; }
+  .stage-item .fm-meta { margin-left:auto; }
+}
 .fm-bar { background:var(--panel2); border:1px solid var(--line2); border-radius:10px; padding:10px; margin-bottom:10px; }
 .fm-bar .row { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
 .fm-bar button { background:var(--panel2); border:1px solid var(--line2); color:var(--text); border-radius:8px; padding:7px 10px; font-size:12px; cursor:pointer; }
@@ -4011,29 +4025,38 @@ body.settings-open { overflow:hidden; }
     </div>
   </div>
   <div id="tab-audio" style="display:none">
-    <div class="hint">上传的音频先保存到归档区 <b>audio/</b> 目录，可上传多个用于筛选。格式仅 wav / mp3，单个 &lt;1MB；未连接车机U盘时，点「设为锁车声音」会自动连接并写入根目录 LockChime.wav（mp3 自动转 wav，覆盖同名文件），写完自动恢复车机导出；手动连接后则保持管理状态，可点「恢复车机导出」。</div>
+    <div class="hint">先选择 wav / mp3 音频（单个 &lt;1MB），直接在浏览器播放预览。点击列表右侧「上传」后自动连接车机 U 盘，写入根目录 <b>LockChime.wav</b>（mp3 自动转换，同名覆盖）。「删除所选」只移除本地列表；「清除车机锁车声音」会连接 U 盘并删除 LockChime.wav。</div>
     <div id="audio-usb-status" style="margin-bottom:10px" aria-live="polite"></div>
     <div class="tool-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button type="button" class="fm-tool upbtn accent-up" id="audio-upbtn" style="margin:0" onclick="document.getElementById('audio-file').click()"><svg class="ic"><use href="#i-upload"/></svg>上传音频 (wav/mp3, &lt;1MB)</button>
+      <button type="button" class="fm-tool upbtn accent-up" id="audio-upbtn" style="margin:0" onclick="document.getElementById('audio-file').click()"><svg class="ic"><use href="#i-upload"/></svg>选择音频 (wav/mp3, &lt;1MB)</button>
       <input type="file" id="audio-file" accept=".wav,.mp3" hidden multiple>
-      <button class="mini" id="audio-rename-btn" onclick="audioRenameSel()" disabled>重命名</button>
-      <button class="mini danger" id="audio-del-btn" onclick="audioDeleteSel()" disabled>删除</button>
+      <button class="mini danger" id="audio-del-btn" onclick="stageDeleteSelected('audio')" disabled>删除所选</button>
+      <button class="mini danger" id="audio-clear-btn" onclick="stageClearRemote('audio')">清除车机锁车声音</button>
       <span class="hint" id="audio-selcount" style="margin:0">已选 0 项</span>
     </div>
-    <audio id="audio-preview" controls hidden style="width:100%;margin-top:10px"></audio>
     <div class="hint" id="audio-write-msg" role="status" aria-live="polite"></div>
     <div class="fm-listhead" style="padding-left:0;padding-right:0">
-      <label class="fm-allwrap"><input type="checkbox" id="audio-all" onchange="audioAll(this.checked)"> 全选</label>
-      <span class="fm-cols"><span>大小</span></span>
+      <label class="fm-allwrap"><input type="checkbox" id="audio-all" onchange="stageAll('audio',this.checked)"> 全选</label>
+      <span class="fm-cols"><span>大小 / 状态</span></span>
     </div>
     <div id="audio-list"></div>
   </div>
   <div id="tab-wraps" style="display:none">
-    <div class="hint">车机车辆涂装/牌照图片: 仅支持 PNG, 直接写入车机U盘根目录 Wraps/ (车机端设置里选)。首次上传会自动创建 Wraps 目录。连接时会临时断开车机读取几秒, 用完点「恢复车机导出」; 5 分钟无操作也会自动恢复。</div>
+    <div class="hint">先选择 PNG 涂装图片（单个 ≤100MB），直接在浏览器显示缩略图。点击列表右侧「上传」后自动连接车机 U 盘并写入 <b>Wraps/</b>，目录不存在会自动补建，同名文件自动覆盖。「删除所选」只移除本地列表；「清除车机涂装」会连接 U 盘并删除 Wraps/ 内的 PNG 文件。</div>
     <div id="wraps-status" style="margin-bottom:10px" aria-live="polite"></div>
-    <button type="button" class="fm-tool upbtn accent-up" id="wraps-upbtn" onclick="document.getElementById('wraps-file').click()"><svg class="ic"><use href="#i-upload"/></svg>上传涂装图片到 Wraps/ (仅 PNG, ≤100MB)</button>
-    <input type="file" id="wraps-file" accept=".png" hidden multiple>
-    <div id="wraps-grid" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px"></div>
+    <div class="tool-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button type="button" class="fm-tool upbtn accent-up" id="wraps-upbtn" style="margin:0" onclick="document.getElementById('wraps-file').click()"><svg class="ic"><use href="#i-upload"/></svg>选择涂装图片 (PNG, ≤100MB)</button>
+      <input type="file" id="wraps-file" accept=".png" hidden multiple>
+      <button class="mini danger" id="wraps-del-btn" onclick="stageDeleteSelected('wraps')" disabled>删除所选</button>
+      <button class="mini danger" id="wraps-clear-btn" onclick="stageClearRemote('wraps')">清除车机涂装</button>
+      <span class="hint" id="wraps-selcount" style="margin:0">已选 0 项</span>
+    </div>
+    <div class="hint" id="wraps-write-msg" role="status" aria-live="polite"></div>
+    <div class="fm-listhead" style="padding-left:0;padding-right:0">
+      <label class="fm-allwrap"><input type="checkbox" id="wraps-all" onchange="stageAll('wraps',this.checked)"> 全选</label>
+      <span class="fm-cols"><span>大小 / 状态</span></span>
+    </div>
+    <div id="wraps-list"></div>
   </div>
   <div id="tab-files">
     <div style="display:flex;gap:8px;margin-bottom:10px">
@@ -10244,127 +10267,204 @@ async function resetBrand() {
   toast('✅ 已恢复默认');
 }
 
-/* 锁车语音 */
-let audioLibDir = '', audioSel = new Set();
-function audioUpdateSel() {
-  const rb = document.getElementById('audio-rename-btn');
-  const db = document.getElementById('audio-del-btn');
-  const cnt = document.getElementById('audio-selcount');
-  if (rb) rb.disabled = audioSel.size !== 1;
-  if (db) db.disabled = audioSel.size < 1;
-  if (cnt) cnt.textContent = '已选 ' + audioSel.size + ' 项';
-  const all = document.getElementById('audio-all');
+/* 锁车声音与涂装: 本地预览列表, 点击单项后才连接并写入车机 */
+const USB_STAGES = {
+  audio: { accept: /\.(wav|mp3)$/i, max: 1024 * 1024, label: '音频', items: [], selected: new Set(), seq: 0 },
+  wraps: { accept: /\.png$/i, max: 100 * 1024 * 1024, label: '图片', items: [], selected: new Set(), seq: 0 }
+};
+let stageOperation = false;
+function stageMessage(kind, text) {
+  const el = document.getElementById(kind + '-write-msg');
+  if (el) el.textContent = text || '';
+}
+function stageUpdate(kind) {
+  const cfg = USB_STAGES[kind];
+  const del = document.getElementById(kind + '-del-btn');
+  const clear = document.getElementById(kind + '-clear-btn');
+  const add = document.getElementById(kind + '-upbtn');
+  const count = document.getElementById(kind + '-selcount');
+  const all = document.getElementById(kind + '-all');
+  if (del) del.disabled = stageOperation || !cfg.selected.size;
+  if (clear) clear.disabled = stageOperation;
+  if (add) add.disabled = stageOperation;
+  if (count) count.textContent = '已选 ' + cfg.selected.size + ' 项 / 共 ' + cfg.items.length + ' 项';
   if (all) {
-    const boxes = document.querySelectorAll('#audio-list .fm-chk');
-    all.checked = boxes.length > 0 && audioSel.size === boxes.length;
+    all.disabled = stageOperation || !cfg.items.length;
+    all.checked = !!cfg.items.length && cfg.selected.size === cfg.items.length;
+    all.indeterminate = cfg.selected.size > 0 && cfg.selected.size < cfg.items.length;
   }
 }
-function audioAll(on) {
-  document.querySelectorAll('#audio-list .fm-chk').forEach(c => {
-    c.checked = on;
-    if (on) audioSel.add(c.dataset.name); else audioSel.delete(c.dataset.name);
-  });
-  audioUpdateSel();
+function stageUpdateAll() { Object.keys(USB_STAGES).forEach(stageUpdate); }
+function stageAll(kind, on) {
+  const cfg = USB_STAGES[kind];
+  cfg.selected.clear();
+  if (on) cfg.items.forEach(item => cfg.selected.add(item.id));
+  stageRender(kind);
 }
-async function refreshAudioUsbStatus() {
-  return refreshUsbStatus();
+function stageAdd(kind, input) {
+  if (stageOperation) return;
+  const cfg = USB_STAGES[kind];
+  const files = Array.from(input.files || []);
+  input.value = '';
+  for (const file of files) {
+    if (!cfg.accept.test(file.name)) { toast('❌ ' + file.name + ' 格式不支持'); continue; }
+    if (!file.size || file.size > cfg.max) {
+      toast('❌ ' + file.name + (file.size ? ' 超过大小限制' : ' 是空文件'));
+      continue;
+    }
+    const oldIndex = cfg.items.findIndex(item => item.file.name === file.name);
+    if (oldIndex >= 0) {
+      const old = cfg.items[oldIndex];
+      URL.revokeObjectURL(old.url);
+      cfg.selected.delete(old.id);
+      cfg.items.splice(oldIndex, 1);
+    }
+    cfg.items.push({ id: ++cfg.seq, file, url: URL.createObjectURL(file), uploaded: false, uploading: false });
+  }
+  stageMessage(kind, '');
+  stageRender(kind);
 }
-async function refreshAudio() {
-  refreshAudioUsbStatus();
-  const j = await (await fetch('/api/audio', { cache: 'no-store' })).json();
-  audioLibDir = j.dir || '';
-  audioSel.clear();
-  const list = document.getElementById('audio-list');
+function stageRender(kind) {
+  const cfg = USB_STAGES[kind];
+  const list = document.getElementById(kind + '-list');
   if (!list) return;
+  const alive = new Set(cfg.items.map(item => item.id));
+  cfg.selected.forEach(id => { if (!alive.has(id)) cfg.selected.delete(id); });
   list.innerHTML = '';
-  if (!j.files || !j.files.length) {
-    list.innerHTML = '<div class="hint" style="margin:0">暂无音频，先上传 wav / mp3 素材</div>';
-    audioUpdateSel();
+  if (!cfg.items.length) {
+    list.innerHTML = '<div class="hint" style="margin:0">暂无待上传' + cfg.label + '，请先选择本地文件</div>';
+    stageUpdate(kind);
     return;
   }
-  for (const f of j.files) {
-    const d = document.createElement('div'); d.className = 'item';
-    const c = document.createElement('input');
-    c.type = 'checkbox'; c.className = 'fm-chk'; c.dataset.name = f.name;
-    c.onchange = () => {
-      if (c.checked) audioSel.add(f.name); else audioSel.delete(f.name);
-      audioUpdateSel();
+  for (const item of cfg.items) {
+    const row = document.createElement('div');
+    row.className = 'item stage-item' + (cfg.selected.has(item.id) ? ' fm-sel' : '');
+    const check = document.createElement('input');
+    check.type = 'checkbox'; check.className = 'fm-chk'; check.checked = cfg.selected.has(item.id);
+    check.disabled = stageOperation || item.uploading;
+    check.onchange = () => {
+      if (check.checked) cfg.selected.add(item.id); else cfg.selected.delete(item.id);
+      row.classList.toggle('fm-sel', check.checked);
+      stageUpdate(kind);
     };
-    const n = document.createElement('span'); n.className = 'n';
-    n.textContent = '🎵 ' + f.name; n.title = f.name;
+    row.appendChild(check);
+    if (kind === 'audio') {
+      const audio = document.createElement('audio');
+      audio.className = 'stage-preview-audio'; audio.controls = true; audio.preload = 'metadata';
+      audio.src = item.url; audio.title = item.file.name;
+      row.appendChild(audio);
+    } else {
+      const img = document.createElement('img');
+      img.className = 'stage-preview-image'; img.src = item.url; img.alt = item.file.name;
+      img.title = '点击放大预览'; img.onclick = () => stagePreview(item);
+      row.appendChild(img);
+    }
+    const name = document.createElement('span');
+    name.className = 'n stage-name'; name.textContent = item.file.name; name.title = item.file.name;
     const meta = document.createElement('span'); meta.className = 'fm-meta';
-    const sz = document.createElement('span'); sz.className = 'fm-size'; sz.textContent = fmtSize(f.size || 0);
-    meta.appendChild(sz);
-    const play = document.createElement('button'); play.className = 'fm-mini';
-    play.textContent = '▶'; play.title = '播放预览';
-    play.onclick = () => audioPlay(f.name);
-    const lock = document.createElement('button'); lock.className = 'primary fm-mini';
-    lock.textContent = '设为锁车声音'; lock.title = '立即写入车机U盘根目录 LockChime.wav';
-    lock.onclick = () => setLock(f.name);
-    d.append(c, n, meta, play, lock);
-    list.appendChild(d);
+    const size = document.createElement('span'); size.className = 'fm-size'; size.textContent = fmtSize(item.file.size);
+    const state = document.createElement('span');
+    state.className = 'stage-state' + (item.uploaded ? ' uploaded' : '');
+    state.textContent = item.uploading ? '上传中' : (item.uploaded ? '已上传' : '待上传');
+    meta.append(size, state);
+    const upload = document.createElement('button');
+    upload.className = 'primary fm-mini stage-upload';
+    upload.textContent = item.uploading ? '上传中…' : (item.uploaded ? '重新上传' : '上传');
+    upload.disabled = stageOperation || item.uploading;
+    upload.onclick = () => stageUpload(kind, item.id);
+    row.append(name, meta, upload);
+    list.appendChild(row);
   }
-  audioUpdateSel();
+  stageUpdate(kind);
 }
-function audioPlay(name) {
-  const prev = document.getElementById('audio-preview');
-  if (!prev) return;
-  const dir = (audioLibDir || '').replace(/\/+$/, '');
-  prev.src = '/dl?path=' + encodeURIComponent(dir + '/' + name);
-  prev.hidden = false;
-  prev.play().catch(() => {});
+function stagePreview(item) {
+  const box = document.getElementById('fm-preview'), body = document.getElementById('fm-preview-body');
+  if (!box || !body) return;
+  body.innerHTML = '';
+  const img = document.createElement('img'); img.src = item.url; img.alt = item.file.name;
+  body.appendChild(img);
+  document.getElementById('fm-preview-title').textContent = item.file.name;
+  box.hidden = false;
 }
-async function setLock(name) {
-  const msg = document.getElementById('audio-write-msg');
-  if (msg) msg.textContent = '正在断开车机读取并写入 LockChime.wav…';
+function stageDeleteSelected(kind) {
+  if (stageOperation) return;
+  const cfg = USB_STAGES[kind];
+  if (!cfg.selected.size) return;
+  const removed = cfg.items.filter(item => cfg.selected.has(item.id));
+  removed.forEach(item => URL.revokeObjectURL(item.url));
+  cfg.items = cfg.items.filter(item => !cfg.selected.has(item.id));
+  cfg.selected.clear();
+  stageRender(kind);
+  stageMessage(kind, '已从本地列表移除 ' + removed.length + ' 项，车机文件未改动');
+}
+async function stageRequest(url, options) {
+  const response = await fetch(url, options);
+  const data = await response.json().catch(() => ({ ok: false, msg: '服务返回异常 (' + response.status + ')' }));
+  if (!data.ok) throw new Error(data.msg || '请求失败 (' + response.status + ')');
+  return data;
+}
+async function stageUpload(kind, id) {
+  if (stageOperation) return;
+  const cfg = USB_STAGES[kind];
+  const item = cfg.items.find(entry => entry.id === id);
+  if (!item) return;
+  stageOperation = true; item.uploading = true;
+  stageMessage(kind, kind === 'audio' ? '正在保存音频并准备连接车机 U 盘…' : '正在自动连接车机 U 盘并上传到 Wraps/…');
+  stageRender(kind); stageUpdateAll();
   try {
-    const j = await (await fetch('/api/audio/setlockchime', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
-    })).json();
-    if (msg) msg.textContent = j.msg || (j.ok ? '已写入' : '写入失败');
-    toast((j.ok ? '✅ ' : '❌ ') + (j.msg || ''));
+    const fd = new FormData(); fd.append('file', item.file);
+    let result;
+    if (kind === 'audio') {
+      await stageRequest('/api/upload/audio', { method: 'POST', body: fd });
+      stageMessage(kind, '音频已保存，正在连接车机 U 盘并写入 LockChime.wav…');
+      result = await stageRequest('/api/audio/setlockchime', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: item.file.name })
+      });
+    } else {
+      fd.append('path', 'Wraps');
+      result = await stageRequest('/api/upload/usb', { method: 'POST', body: fd });
+    }
+    item.uploaded = true;
+    stageMessage(kind, item.file.name + '：' + (result.msg || '上传成功'));
+    toast('✅ ' + item.file.name + ' 上传成功');
   } catch (e) {
-    if (msg) msg.textContent = '写入失败: ' + e;
+    stageMessage(kind, item.file.name + '：上传失败 — ' + e.message);
+    toast('❌ ' + item.file.name + ' — ' + e.message);
+  } finally {
+    item.uploading = false; stageOperation = false;
+    stageRender(kind); stageUpdateAll();
+    refreshUsbStatus();
   }
-  refreshAudioUsbStatus();
 }
-async function audioRenameSel() {
-  if (audioSel.size !== 1) return;
-  const old = [...audioSel][0];
-  const nn = prompt('新的文件名 (保留 .wav / .mp3 后缀)', old);
-  if (!nn || nn === old) return;
-  const j = await (await fetch('/api/audio/rename', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ old, new: nn })
-  })).json();
-  toast((j.ok ? '✅ ' : '❌ ') + (j.msg || ''));
-  refreshAudio();
-}
-async function audioDeleteSel() {
-  if (!audioSel.size) return;
-  if (!confirm('删除选中的 ' + audioSel.size + ' 个音频?')) return;
-  for (const name of [...audioSel]) {
-    await fetch('/api/audio/' + encodeURIComponent(name), { method: 'DELETE' });
+async function stageClearRemote(kind) {
+  if (stageOperation) return;
+  const target = kind === 'audio' ? 'LockChime.wav' : 'Wraps/ 内的全部 PNG 涂装';
+  if (!confirm('将自动连接车机 U 盘并永久删除 ' + target + '。\n本地预览列表会保留，确定继续吗？')) return;
+  stageOperation = true;
+  stageMessage(kind, '正在自动连接车机 U 盘并清除 ' + target + '…');
+  stageRender(kind); stageUpdateAll();
+  try {
+    const result = await stageRequest('/api/usb/clear', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: kind })
+    });
+    USB_STAGES[kind].items.forEach(item => { item.uploaded = false; });
+    stageMessage(kind, result.msg || '车机文件已清除');
+    toast('✅ ' + (result.msg || '车机文件已清除'));
+  } catch (e) {
+    stageMessage(kind, '清除失败：' + e.message);
+    toast('❌ 清除失败 — ' + e.message);
+  } finally {
+    stageOperation = false;
+    stageRender(kind); stageUpdateAll();
+    refreshUsbStatus();
   }
-  toast('✅ 已删除');
-  refreshAudio();
 }
-document.getElementById('audio-file').onchange = async function () {
-  const files = Array.from(this.files || []);
-  this.value = '';
-  for (const f of files) {
-    if (!/\.(wav|mp3)$/i.test(f.name)) { toast('❌ ' + f.name + ' 仅支持 wav/mp3'); continue; }
-    if (f.size > 1024 * 1024) { toast('❌ ' + f.name + ' 超过 1MB'); continue; }
-    const fd = new FormData(); fd.append('file', f);
-    try {
-      const r = await fetch('/api/upload/audio', { method: 'POST', body: fd });
-      const j = await r.json();
-      toast((j.ok ? '✅ ' : '❌ ') + f.name + ' — ' + (j.msg || ''));
-    } catch (e) { toast('❌ ' + f.name + ' — 上传失败'); }
-  }
-  refreshAudio();
-};
+function refreshAudio() { refreshUsbStatus(); stageRender('audio'); }
+function refreshWraps() { refreshUsbStatus(); stageRender('wraps'); }
+document.getElementById('audio-file').onchange = function () { stageAdd('audio', this); };
+document.getElementById('wraps-file').onchange = function () { stageAdd('wraps', this); };
 
 /* 文件管理器 */
 let curDir = '';
@@ -10629,65 +10729,6 @@ async function purgeTeslaCam() {
   if (!confirm('再次确认：此操作不可撤销，确认清空全部录像？')) return;
   await fmSend({ area: 'usb', op: 'purge_teslacam', items: [] });
 }
-/* ---------- 涂装 (Wraps) ---------- */
-let wrapAttached = false;   // 与文件管理、锁车声音共用同一个 U 盘管理状态
-async function refreshWraps() {
-  refreshUsbStatus();
-  const grid = document.getElementById('wraps-grid');
-  let j;
-  try {
-    j = await (await fetch('/api/usb/browse?dir=' + encodeURIComponent('Wraps'))).json();
-  } catch (e) { return; }
-  wrapAttached = !!j.attached;
-  usbSetAttached(wrapAttached);
-  grid.innerHTML = '';
-  if (!j.ok) {
-    grid.innerHTML = wrapAttached
-      ? '<div class="hint">Wraps 目录不存在, 上传图片会自动创建</div>'
-      : '<div class="hint">U盘未连接管理 (车机正常读写中), 点上方「连接车机U盘」后可查看 / 上传图片</div>';
-    return;
-  }
-  const files = j.files || [];
-  if (!files.length) { grid.innerHTML = '<div class="hint">Wraps 目录为空, 上传图片即可在车机上选用</div>'; return; }
-  for (const f of files) {
-    const box = document.createElement('div');
-    box.style.cssText = 'width:110px;text-align:center';
-    const img = document.createElement('img');
-    img.src = '/usbdl?path=' + encodeURIComponent('Wraps/' + f.name);
-    img.style.cssText = 'width:100px;height:68px;object-fit:contain;background:#0d1117;border-radius:8px;border:1px solid #2a3440;cursor:pointer';
-    img.onclick = () => window.open('/usbdl?path=' + encodeURIComponent('Wraps/' + f.name));
-    const cap = document.createElement('div');
-    cap.textContent = f.name;
-    cap.style.cssText = 'font-size:11px;color:#c9d1d9;margin:4px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-    const btn = document.createElement('button');
-    btn.className = 'danger'; btn.textContent = t('删除');
-    btn.style.cssText = 'font-size:11px;padding:4px 12px';
-    btn.onclick = async () => {
-      if (!confirm(t('删除') + ' Wraps/' + f.name + ' ?')) return;
-      const r = await fetch('/api/usb?path=' + encodeURIComponent('Wraps/' + f.name), { method: 'DELETE' });
-      const rj = await r.json().catch(() => ({}));
-      toast(rj.ok ? '✅ ' + t('已删除') : '❌ ' + (rj.msg || t('删除失败')));
-      refreshWraps();
-    };
-    box.append(img, cap, btn);
-    grid.appendChild(box);
-  }
-}
-document.getElementById('wraps-file').onchange = async function () {
-  if (!this.files || !this.files.length) return;
-  if (!wrapAttached) { toast('请先点「连接车机U盘」, 连上后再上传'); this.value = ''; return; }
-  for (const f of this.files) {
-    if (!/\.png$/i.test(f.name)) { toast('❌ ' + f.name + ' — 仅支持 PNG 图片'); continue; }
-    const fd = new FormData(); fd.append('file', f); fd.append('path', 'Wraps');
-    try {
-      const r = await fetch('/api/upload/usb', { method: 'POST', body: fd });
-      const j = await r.json();
-      toast((j.ok ? '✅ ' : '❌ ') + f.name + ' — ' + (j.msg || ''));
-    } catch (e) { toast('❌ ' + f.name + ' — ' + t('上传失败')); }
-  }
-  this.value = '';
-  await refreshWraps();
-};
 function switchArea(a) {
   area = a;
   document.getElementById('st-files').classList.add('active');
@@ -10740,7 +10781,6 @@ function renderUsbPanels() {
 function usbSetAttached(attached) {
   usbPanelAttached = !!attached;
   usbAttached = usbPanelAttached;
-  wrapAttached = usbPanelAttached;
   renderUsbPanels();
 }
 function usbApplyStatus(j) {
@@ -12855,6 +12895,51 @@ def usb_real(p):
     return rp
 
 
+def usb_attach_for_write():
+    """写入前确保 U 盘已挂载; 暂时被其它任务占用时短暂重试。"""
+    if usb_attached and os.path.ismount(MNT):
+        return True, "already"
+    msg = "未知错误"
+    for attempt in range(8):
+        ok, msg = usb_attach()
+        if ok:
+            return True, msg
+        if attempt < 7:
+            time.sleep(2)
+    return False, msg
+
+
+def usb_clear_target(target):
+    """只清理锁车声音或 Wraps 中的 PNG, 不开放任意路径删除。"""
+    if target not in ("audio", "wraps"):
+        return {"ok": False, "msg": "不支持的清除目标"}
+    ok, msg = usb_attach_for_write()
+    if not ok:
+        return {"ok": False, "msg": "自动连接车机U盘失败: " + msg}
+    removed = 0
+    try:
+        if target == "audio":
+            fp = usb_real("LockChime.wav")
+            if os.path.isfile(fp):
+                os.remove(fp)
+                removed = 1
+        else:
+            directory = usb_real("Wraps")
+            if os.path.isdir(directory):
+                for entry in os.scandir(directory):
+                    if entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(".png"):
+                        os.remove(entry.path)
+                        removed += 1
+        subprocess.run(["sync"], capture_output=True)
+    except OSError as ex:
+        return {"ok": False, "msg": "清除失败: %s" % ex}
+    if target == "audio":
+        msg = "已清除车机锁车声音 LockChime.wav" if removed else "车机上没有 LockChime.wav，无需清除"
+    else:
+        msg = "已清除 Wraps/ 内 %d 个 PNG 文件" % removed if removed else "Wraps/ 内没有 PNG 文件，无需清除"
+    return {"ok": True, "removed": removed, "msg": msg}
+
+
 # ---------- 文件管理器: 批量操作 (多选删除/移动/复制/重命名) ----------
 def recording_locks():
     try:
@@ -14086,12 +14171,7 @@ def audio_set_lockchime(name):
         # 与文件管理一致: 挂载前就立即断开车机读取; 暂时被占用时短暂重试
         own_mount = not (usb_attached and os.path.ismount(MNT))
         if own_mount:
-            ok, msg = False, ""
-            for _ in range(8):
-                ok, msg = usb_attach()
-                if ok:
-                    break
-                time.sleep(2)
+            ok, msg = usb_attach_for_write()
             if not ok:
                 return {"ok": False, "msg": "连接车机U盘失败: " + msg}
         staged = os.path.join(MNT, ".LockChime.wav.tmp")
@@ -23869,6 +23949,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json(usb_attach_cancel())
         elif path == "/api/usb/detach":
             self._json(usb_detach_async())
+        elif path == "/api/usb/clear":
+            body = self._read_json()
+            target = body.get("target") if isinstance(body, dict) else None
+            if target not in ("audio", "wraps"):
+                self._json({"ok": False, "msg": "不支持的清除目标"}, 400)
+                return
+            self._json(usb_clear_target(target))
         elif path == "/api/upload/usb":
             fn, data, fields = self._read_upload()
             if fn == "TOOBIG":
@@ -23879,8 +23966,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "msg": "无效的文件"}, 400)
                 return
             if not usb_attached or not os.path.ismount(MNT):
-                self._json({"ok": False, "msg": "车机U盘未连接, 请先点「连接车机U盘」"}, 400)
-                return
+                ok, msg = usb_attach_for_write()
+                if not ok:
+                    self._json({"ok": False, "msg": "自动连接车机U盘失败: " + msg}, 400)
+                    return
             dest = usb_real(fields.get("path"))
             if dest is None:
                 self._json({"ok": False, "msg": "目标目录无效"}, 400)
