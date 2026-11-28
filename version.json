@@ -1,5 +1,5 @@
 {
-  "version": "2026.11.28.027",
+  "version": "2026.11.28.028",
   "date": "2026-11-28",
   "files": [
     "storage_allocation.py",
@@ -15,6 +15,9 @@
     "source_url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz"
   },
   "notes": [
+    "安装时不再自动挂载或格式化数据盘：已挂载的 ext4 卡直接使用，未挂载时由开机服务或网页「外置卡管理」挂载，仅显式 --init-card 才在安装阶段初始化",
+    "播放设置的事件缓存估算按当前转码码率更新（720p 约 1.5、480p 约 0.9、360p 约 0.5 Mbps），并按触发点前 1 分钟到后 1 分钟、每路 3 段计算",
+    "—— 以下为 2026.11.28.027 更新 ——",
     "FFmpeg 仓库包文件名改用 aarch64 架构标识，安装器、网页修复与 OTA 清单路径同步更新",
     "—— 以下为 2026.11.28.026 更新 ——",
     "仓库新增 BtbN N-129333-g7fdb4c2341 ARM64 FFmpeg 原始压缩包，安装器可直接校验并安装随包文件，无需联网下载",

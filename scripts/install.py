@@ -57,7 +57,7 @@ def arguments(argv=None):
     mode.add_argument('--rollback', action='store_true',
                       help='回滚到最近一次 install 升级前的程序与配置备份')
     parser.add_argument('--init-card', action='store_true',
-                        help='数据盘未初始化时允许自动格式化为 ext4（会清空该卡数据）；安装时也会交互询问')
+                        help='显式允许安装时格式化并挂载数据盘为 ext4（会清空该卡数据）；不加此项安装器不会挂载数据盘')
     parser.add_argument('--start', action='store_true', help='安装成功后启动；仅与 --apply 一起使用')
     parser.add_argument('--data-mount', default='/mnt/sdcard',
                         help='视频存储（镜像+归档）所在盘的挂载点，建议 TF 卡；F50 默认 /dev/mmcblk1p1 挂载到 /mnt/sdcard')
@@ -301,9 +301,9 @@ class Installer:
         return answer in ('y', 'yes', '是')
 
     def prepare_data_mount(self):
-        """安装前准备数据盘: 未挂载则自动挂载; 未初始化则按需格式化为 ext4。
+        """仅在显式 --init-card 时使用: 未初始化则格式化为 ext4, 并在未挂载时挂载。
 
-        升级场景默认不做任何破坏性操作, 只有显式 --init-card 才会格式化。
+        默认安装不会调用这里, 也不会自动挂载数据盘; 挂载交给开机服务或网页「外置卡管理」。
         """
         mount = self.args.data_mount
         device = self.card_device()
@@ -998,14 +998,20 @@ class Installer:
                 compile(src.read_text(encoding='utf-8'), str(src), 'exec')
         mounted = self.data_mount_row()
         if not self.mount_ready(mounted):
-            if not self.args.apply:
-                # 检查模式保持只读: 不格式化, 只说明安装时会自动初始化 TF 卡
-                print('提示：数据盘 %s 尚未以 ext4 读写挂载。执行 `sudo ./install.sh install` 时'
-                      '会自动检测 TF 卡、初始化（格式化为 ext4）并挂载，无需提前挂载。'
-                      % self.args.data_mount, flush=True)
-                mounted = None
-            else:
+            if self.args.apply and self.args.init_card:
+                # 只有显式 --init-card 才会格式化并挂载; 默认安装不碰数据盘
                 mounted = self.prepare_data_mount()
+            else:
+                mounted = None
+                if self.args.apply:
+                    print('提示：数据盘 %s 未以 ext4 读写挂载，安装不会自动挂载或格式化；'
+                          '程序安装完成后由开机服务或网页「外置卡管理」挂载，'
+                          '首次设置时会创建视频目录。需要在安装时初始化可加 --init-card。'
+                          % self.args.data_mount, flush=True)
+                else:
+                    print('提示：数据盘 %s 尚未以 ext4 读写挂载；安装不会自动挂载，'
+                          '请先在系统或网页「外置卡管理」中挂载。' % self.args.data_mount,
+                          flush=True)
         uuid = ''
         if mounted is not None:
             if self.path(self.args.data_mount).is_symlink():
@@ -1019,6 +1025,16 @@ class Installer:
             # 具体容量与归档位置在首次打开网页时到「设置 → 存储分配」里完成。
             if not self.upgrade and usage.free < 256 * 1024 * 1024:
                 raise InstallError('数据盘至少需要 256 MiB 空闲空间，用于日志与首次设置')
+        else:
+            # 未挂载时仍按设备读取 UUID 写入配置, 供开机服务稍后挂载; 读不到就留空由网页设置。
+            device = self.card_device()
+            if device and self.tool('blkid'):
+                try:
+                    uuid = run([self.tool('blkid'), '-o', 'value', '-s', 'UUID', device]).strip()
+                except InstallError:
+                    uuid = ''
+            if uuid and not re.fullmatch(r'[A-Za-z0-9-]+', uuid):
+                uuid = ''
         package = ffmpeg_package(self.source)
         app_bytes = (sum(info['size'] for info in runtime_files.values()) + 128 * 1024 * 1024
                      + (package['size'] if package else 0))
@@ -1138,10 +1154,14 @@ class Installer:
                 return True
             app_stage = Path(tempfile.mkdtemp(prefix='.tsf-app-', dir=self.path('/opt')))
             stages.append(app_stage)
-            data_stage = Path(tempfile.mkdtemp(prefix='.tsf-data-', dir=self.path(self.args.data_mount)))
-            stages.append(data_stage)
             os.chmod(app_stage, 0o755)
-            os.chmod(data_stage, 0o755)
+            # 数据盘未挂载时不创建视频目录: 安装器不自动挂载, 由开机服务/网页挂载后首次设置创建
+            data_stage = None
+            if self.mount_ready(self.data_mount_row()):
+                data_stage = Path(tempfile.mkdtemp(prefix='.tsf-data-',
+                                                   dir=self.path(self.args.data_mount)))
+                stages.append(data_stage)
+                os.chmod(data_stage, 0o755)
             if self.runtime:
                 for name, info in self.runtime_files().items():
                     target = app_stage / 'runtime' / name
@@ -1158,16 +1178,18 @@ class Installer:
                   (password, secrets.token_hex(32)), 0o600)
             write(app_stage / 'settings.json', '{"auto_update": false}\n', 0o600)
             # 全新安装不生成镜像、不预建归档目录: 由网页「存储分配」首次设置时创建
-            (data_stage / 'logs').mkdir()
+            if data_stage is not None:
+                (data_stage / 'logs').mkdir()
             env = os.environ.copy()
-            env.update(TSF_ARCHIVE=str(data_stage / 'archive'),
+            env.update(TSF_ARCHIVE=str((data_stage or app_stage) / 'archive-ota-check'),
                        TSF_AUTH_FILE=str(app_stage / 'auth.conf'),
                        TSF_SETTINGS=str(app_stage / 'settings.json'))
             run([self.python(), '-B', str(app_stage / 'sentry-viewer.py'), '--ota-check'], env=env)
             write(app_stage / MARKER, json.dumps({'files': self.source_hashes(),
                   'options': self.options_record()}, indent=2) + '\n')
-            data_stage.rename(self.path(self.data_home))
-            created.append(self.path(self.data_home))
+            if data_stage is not None:
+                data_stage.rename(self.path(self.data_home))
+                created.append(self.path(self.data_home))
             app_stage.rename(self.path(APP))
             created.append(self.path(APP))
             # Exclusive creates protect against unexpected files appearing after preflight.
@@ -1220,6 +1242,9 @@ class Installer:
             lock.rmdir()
         print('安装完成。账号 admin；默认密码为空，首次打开网页请按提示设置新密码。')
         print('全新安装未创建车机镜像，也未预设归档区位置。')
+        if not self.mount_ready(self.data_mount_row()):
+            print('数据盘尚未挂载，安装器没有自动挂载；请先挂载 %s（开机服务或网页「外置卡管理」），'
+                  '再打开网页完成首次设置。' % self.args.data_mount)
         print('请打开 http://<F50-IP>:%s → 设置 → 存储分配，按向导设置并创建车机 U 盘。' % self.args.port)
         print('启动命令：/etc/init.d/tsf-mount start；网页端口：%s' % self.args.port)
         return True

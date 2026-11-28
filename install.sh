@@ -6,11 +6,12 @@
 #   sudo ./install.sh apply              # 预检 + 安装
 #   sudo ./install.sh install            # 预检 + 安装 + 启动服务
 #   sudo ./install.sh rollback           # 回滚到最近一次升级前的程序与配置 (网页打不开时用)
-#   sudo ./install.sh install --init-card  # 数据盘未初始化时直接格式化为 ext4 并挂载
+#   sudo ./install.sh install --init-card  # 显式允许安装时格式化并挂载未初始化的数据盘
 #   sudo ./install.sh --help             # 查看参数
 #
-# 数据盘 (TF 卡) 不需要提前挂载: install 会检测并交互询问是否直接初始化,
-# 非交互环境用 --init-card 显式允许格式化 (会清空该卡数据)。
+# 安装器不会自动挂载或格式化数据盘 (TF 卡): 已挂载的 ext4 卡直接使用,
+# 未挂载时只写入程序与配置, 由开机服务或网页「外置卡管理」完成挂载与首次设置。
+# 需要在安装阶段初始化请显式加 --init-card (会清空该卡数据)。
 
 set -e
 

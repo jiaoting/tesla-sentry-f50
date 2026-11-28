@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.027"
+APP_VERSION = "2026.11.28.028"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -4437,7 +4437,7 @@ body.settings-open { overflow:hidden; }
         </select>
       </label>
       <div class="hint" id="play-net"></div>
-      <div class="hint">提前把哨兵录像、手动保存里的最新事件转成上面的外网默认画质，点开即可播放，不用等转码。这里设置每个模块预转码缓存几个事件（每个事件包括事件发生前 1 分钟到事件发生后 1 分钟的全部摄像头视频：新款 6 路、老款 4 路）；填 0 关闭该模块预转码。设置同步写入 /etc/tesla-sentry.conf。</div>
+      <div class="hint">提前把哨兵录像、手动保存里的最新事件转成上面的外网默认画质，点开即可播放，不用等转码。这里设置每个模块预转码缓存几个事件；每个事件按设定范围包含事件触发点前 1 分钟到触发点后 1 分钟（共 3 段）的全部摄像头视频（新款 6 路、老款 4 路）；填 0 关闭该模块预转码。设置同步写入 /etc/tesla-sentry.conf。</div>
       <div class="hint" id="prewarm-space-4"></div>
       <div class="hint" id="prewarm-space-6"></div>
       <div class="hint" id="prewarm-space"></div>
@@ -8480,8 +8480,10 @@ function playSpaceHint() {
     el.textContent = '空间占用提醒：原画不转码也不预转码，不会额外占用归档空间。';
     return;
   }
-  const mbps = {'720p': 2.2, '480p': 1.2, '360p': 0.7}[quality] || 1.2;
-  const perCam = mbps / 8 * 120;
+  // 按当前转码码率估算：720p 约 1.5 Mbps、480p 约 0.9 Mbps、360p 约 0.5 Mbps
+  const mbps = {'720p': 1.5, '480p': 0.9, '360p': 0.5}[quality] || 0.9;
+  // 每个事件为触发点前 1 分钟、触发段、触发点后 1 分钟，共 3 段 × 60 秒
+  const perCam = mbps / 8 * 180;
   const perEvent4 = Math.round(perCam * 4), perEvent6 = Math.round(perCam * 6);
   const num = (id) => { const e = document.getElementById(id); const v = e ? Number(e.value) : 0; return Number.isFinite(v) && v > 0 ? v : 0; };
   const events = num('prewarm-sentry') + num('prewarm-saved');
@@ -8490,7 +8492,7 @@ function playSpaceHint() {
     ' 个事件，约需 ' + compact(perEvent4 * events * 1048576) + '。';
   el6.textContent = '6 路车型：' + quality + ' 每个事件约 ' + perEvent6 + ' MB；两个模块合计 ' + events +
     ' 个事件，约需 ' + compact(perEvent6 * events * 1048576) + '。';
-  el.textContent = '以上均包含事件前后各 1 分钟的全部摄像头；存储紧张时请调小事件数或填 0 关闭。';
+  el.textContent = '以上按当前画质码率估算，均包含触发点前后各 1 分钟的全部摄像头（每路 3 段）；存储紧张时请调小事件数或填 0 关闭。';
 }
 /* 转码任务: 立即转码/暂停转码 + 实时进度 (后台线程执行, 切页不影响) */
 let PREWARM_POLL = null;
