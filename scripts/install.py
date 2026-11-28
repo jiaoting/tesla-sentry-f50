@@ -928,7 +928,7 @@ class Installer:
             for dest, src in self.payload().items():
                 if dest.startswith(APP + '/'):
                     write(app_stage / Path(dest).name, src.read_text(encoding='utf-8'), 0o755)
-            password = secrets.token_urlsafe(18)
+            password = ''  # 首次打开网页时引导设置新密码
             write(app_stage / 'auth.conf', 'user=admin\npass=%s\nsecret=%s\nttl=2592000\n' %
                   (password, secrets.token_hex(32)), 0o600)
             write(app_stage / 'settings.json', '{"auto_update": false}\n', 0o600)
@@ -993,7 +993,7 @@ class Installer:
                 if path.exists():
                     shutil.rmtree(path)
             lock.rmdir()
-        print('安装完成。账号 admin；密码保存在 /opt/tesla-sentry/auth.conf。')
+        print('安装完成。账号 admin；默认密码为空，首次打开网页请按提示设置新密码。')
         print('全新安装未创建车机镜像，也未预设归档区位置。')
         print('请打开 http://<F50-IP>:%s → 设置 → 存储分配，按向导设置并创建车机 U 盘。' % self.args.port)
         print('启动命令：/etc/init.d/tsf-mount start；网页端口：%s' % self.args.port)
@@ -1072,11 +1072,8 @@ class Installer:
                     target.write_text(src.read_text(encoding='utf-8'), encoding='utf-8', newline='\n')
                     os.chmod(target, 0o755)
             if not (staging / 'auth.conf').is_file():
-                password = secrets.token_urlsafe(18)
-                (staging / 'auth.conf').write_text(
-                    'user=admin\npass=%s\nsecret=%s\nttl=2592000\n' % (password, secrets.token_hex(32)),
-                    encoding='utf-8', newline='\n')
-                os.chmod(staging / 'auth.conf', 0o600)
+                # 老用户删除 auth.conf 是主动关闭认证，升级时不能重新打开或强制首次设置。
+                print('提示：未检测到 auth.conf，保留免登录状态；可在网页「账号」中设置密码。')
             if not (staging / 'settings.json').is_file():
                 (staging / 'settings.json').write_text('{"auto_update": false}\n',
                                                        encoding='utf-8', newline='\n')

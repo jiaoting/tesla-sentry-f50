@@ -71,7 +71,7 @@ if [ "$PURGE" = "1" ]; then
 else
     echo "==> 保留录像数据: $TSF_IMG , $TSF_ARCHIVE"
     echo "    需要彻底清除请加 --purge"
-    echo "    注意: 网页登录凭据 auth.conf 已删除, 重装会生成新密码"
+    echo "    注意: 网页登录凭据 auth.conf 已删除, 重装后使用空密码并提示设置新密码"
 fi
 
 echo "==> 卸载完成"

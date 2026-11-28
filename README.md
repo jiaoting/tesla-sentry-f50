@@ -33,7 +33,7 @@
 | 存储分配 | 统一设置 U 盘 / 归档 / 驾驶记录 / 安全预留，容量条按真实占用显示 |
 | 录像保护 | 锁定后同步、清理、文件管理均不触碰；已删除事件不被重新抄回 |
 | 在线升级 | 多源并发竞速 + GitHub API 兜底，原子替换，起不来自动回滚 |
-| 登录保护 | 随机 10 位密码，HMAC cookie 保留 30 天，10 分钟错 8 次返回 429 |
+| 登录保护 | 首次安装空密码并引导设置，HMAC cookie 保留 30 天，10 分钟错 8 次返回 429 |
 | 个性化 | 品牌图标 / 名称、深浅主题、默认 / 像素 2 套界面风格、10 种语言 |
 
 > 版本迭代记录见 [docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md)。
@@ -91,7 +91,7 @@ sudo ./install.sh --help                                       # 查看全部参
 | `sudo ./uninstall.sh` | 停服务、删程序与缓存，保留镜像和归档录像 |
 | `sudo ./uninstall.sh --purge` | 连镜像和归档一起删（不可恢复） |
 
-安装流程：检查 F50 内核 gadget / exFAT / Python / FFmpeg → 装到 `/opt/tesla-sentry/`、写 `/etc/tesla-sentry.conf` → 注册 OpenWrt procd 服务与定时任务 → 生成随机登录密码 → 启动。
+安装流程：检查 F50 内核 gadget / exFAT / Python / FFmpeg → 装到 `/opt/tesla-sentry/`、写 `/etc/tesla-sentry.conf` → 注册 OpenWrt procd 服务与定时任务 → 写入空密码配置 → 启动，首次打开网页时设置新密码。
 
 ### 升级
 
@@ -107,9 +107,9 @@ sudo ./install.sh
 
 ### 首次使用
 
-1. 全新安装**不预建镜像**。打开 `http://<F50-IP>:8080`，登录后按引导进入「设置 → 存储分配」，设置车机 U 盘容量、归档区上限与安全预留，点「调整 U 盘容量」创建镜像。
+1. 全新安装**不预建镜像**。打开 `http://<F50-IP>:8080`，按提示设置新密码，再按引导进入「设置 → 存储分配」，设置车机 U 盘容量、归档区上限与安全预留，点「调整 U 盘容量」创建镜像。
 2. 插进手套箱 USB 口，车机识别并开始录制。首次插入若提示「格式化 USB 设备」，点确认即可；网页会自动识别新的分区 / 卷偏移。
-3. 手机连设备热点（或 USB 网卡直连 / Tailscale / frp）打开 `http://<设备IP>:8080`，账号 `admin`，密码见安装输出或 `/opt/tesla-sentry/auth.conf`。
+3. 手机连设备热点（或 USB 网卡直连 / Tailscale / frp）打开 `http://<设备IP>:8080`，账号 `admin`，首次默认密码为空；设置后使用新密码登录。
 
 TF 卡无需提前挂载：`install` 会检测未挂载 / 未初始化的卡，交互询问后直接格式化为 ext4 并挂载（会清空该卡）；非交互环境加 `--init-card`。
 
@@ -246,7 +246,7 @@ OTA、推送、认证参数不写入此 conf，走环境变量或网页配置。
 
 ## 安全提示
 
-- `install.sh` 默认开启全站登录保护；直接裸跑 `python3 sentry-viewer.py` 且无 `auth.conf` 时认证关闭，仅限可信内网。`auth.conf` 存在却读不出密码时服务会**拒绝启动**，不会静默裸奔。
+- `install.sh` 全新安装默认使用空密码并引导首次设置，设置后开启全站登录保护；直接裸跑 `python3 sentry-viewer.py` 且无 `auth.conf` 时认证关闭，仅限可信内网。`auth.conf` 存在但没有 `pass=` / `sha256=` 配置时服务会**拒绝启动**，不会静默裸奔。
 - 登录页与 HTTP Basic 共用限速：同一 IP 10 分钟内错 8 次锁 5 分钟，Basic 绕不过去。
 - 上传限制 100 MB，普通 JSON 接口请求体限制 1 MB，单连接读写超时 30 秒、并发线程上限 48；路径约束在归档区 / 镜像挂载点内，不可逃逸到系统目录。
 - 认证与 Cookie 走 HTTP 明文，公网访问务必套 HTTPS 或 VPN；反向代理请传 `X-Forwarded-Proto: https`（或设 `TSF_COOKIE_SECURE=1`），登录 Cookie 会自动带 `Secure`。

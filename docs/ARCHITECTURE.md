@@ -112,7 +112,7 @@ IDLE ───────────────────────► MA
 | 音频 | ≤ 1MB（车机限制）；锁车音必须 WAV |
 | DELETE 类接口 | 与 GET / POST 一样先过 `_gate()` 登录校验 |
 
-`install.sh` 默认生成 `/opt/tesla-sentry/auth.conf`（`admin` + 随机 10 位密码）。存在密码时 `AUTH_ON` 为真，页面 / 媒体流 / 缩略图 / 下载 / 全部 API 统一拦截：HMAC 签名 cookie（默认 30 天）或 HTTP Basic；同一 IP 在 10 分钟窗口内连错 8 次返回 429。删除 `auth.conf` 并重启即关闭认证，**仅建议纯内网**。
+`install.sh` 默认生成 `/opt/tesla-sentry/auth.conf`（`admin` + 空 `pass=`）。空密码配置进入首次设置状态，网页自动打开账号页引导设置新密码；存在密码时 `AUTH_ON` 为真，页面 / 媒体流 / 缩略图 / 下载 / 全部 API 统一拦截：HMAC 签名 cookie（默认 30 天）或 HTTP Basic；同一 IP 在 10 分钟窗口内连错 8 次返回 429。删除 `auth.conf` 并重启即关闭认证，**仅建议纯内网**。
 
 认证本身走 HTTP 明文，公网暴露请自行套 HTTPS 或 VPN。
 

@@ -538,7 +538,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.010"
+APP_VERSION = "2026.11.28.011"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -4382,7 +4382,7 @@ body.settings-open { overflow:hidden; }
     <section class="support-sec" id="about-security">
       <div class="support-title">安全提示</div>
       <ul class="about-list">
-        <li>安装器默认生成随机登录密码并开启全站认证；不要在不可信网络中删除 auth.conf 或关闭认证。</li>
+        <li>全新安装默认使用空密码，首次打开网页会提示设置新密码；设置后开启全站认证，不要在不可信网络中关闭认证。</li>
         <li>网页认证与 Cookie 默认走 HTTP。公网访问务必使用 HTTPS、VPN 或安全隧道，并妥善保管登录密码和推送密钥。</li>
         <li>格式化数据卡、车机 U 盘以及调整容量可能清除全部数据；操作前备份重要录像并仔细核对目标设备。</li>
         <li>文件管理、锁车声音与车辆涂装写入会临时断开车机读取；请在安全停车且无需录像时操作，完成后恢复车机导出。</li>
@@ -9850,7 +9850,20 @@ async function pwLoad() {
     const j = await (await fetch('/api/auth/info', { cache: 'no-store' })).json();
     document.getElementById('pw-user').textContent = j.user || 'admin';
     const m = document.getElementById('pw-msg');
-    if (!j.on) { m.textContent = t('当前未开启登录保护, 设置密码后即开启'); m.style.color = 'var(--muted2)'; }
+    if (j.setup) {
+      m.textContent = t('首次使用，当前密码为空，请设置新密码');
+      m.style.color = 'var(--accent)';
+      document.getElementById('pw-old').value = '';
+      setTimeout(() => document.getElementById('pw-new').focus(), 0);
+    } else if (!j.on) {
+      m.textContent = t('当前未开启登录保护, 设置密码后即开启'); m.style.color = 'var(--muted2)';
+    }
+  } catch (e) {}
+}
+async function authSetupCheck() {
+  try {
+    const j = await (await fetch('/api/auth/info', { cache: 'no-store' })).json();
+    if (j.setup && !document.body.classList.contains('settings-open')) openPanel('auth');
   } catch (e) {}
 }
 async function pwSave() {
@@ -11089,6 +11102,7 @@ refreshBrand();
   setTimeout(apply, 300);
 })();
 load();
+authSetupCheck();
 // 字体状态预热: 这时还没开播放器, 连接池是空的, 一定能拿到
 loadFontInfo().then(paintFont);
 </script></body></html>"""
@@ -22059,7 +22073,10 @@ AUTH_SHA = (os.environ.get("TSF_AUTH_SHA256") or _AC.get("sha256") or "").strip(
 AUTH_SECRET = (os.environ.get("TSF_AUTH_SECRET") or _AC.get("secret") or "") or ("tsf-v1|" + (AUTH_SHA or AUTH_PASS))
 AUTH_TTL = int(os.environ.get("TSF_AUTH_TTL") or _AC.get("ttl") or 30 * 86400)
 AUTH_ON = bool(AUTH_SHA or AUTH_PASS)
-if (AUTH_CONF_ERR is None and os.path.exists(AUTH_FILE) and not AUTH_ON
+# 安装器写入 pass= 空密码时进入首次设置；没有 auth.conf 仍表示用户主动关闭认证。
+AUTH_SETUP = bool(AUTH_CONF_ERR is None and not AUTH_ON and os.path.exists(AUTH_FILE)
+                  and ("pass" in _AC or "sha256" in _AC))
+if (AUTH_CONF_ERR is None and os.path.exists(AUTH_FILE) and not AUTH_ON and not AUTH_SETUP
         and not (os.environ.get("TSF_AUTH_PASS") or os.environ.get("TSF_AUTH_SHA256"))):
     AUTH_CONF_ERR = "auth.conf 存在但没有 pass= / sha256=, 内容可能已损坏"
 FAILS = {}                       # ip -> [失败次数, 首次失败时间]
@@ -22075,7 +22092,7 @@ def pw_ok(pw):
 def auth_set_pass(old, new):
     """改网页登录密码; 返回 (成功?, 提示)。成功后重写 auth.conf 与内存凭据,
     并换一个随机 secret → 其它设备上的旧 cookie 立刻失效, 只有本机(前端会用新密码重新登录)继续。"""
-    global AUTH_PASS, AUTH_SHA, AUTH_SECRET, AUTH_ON
+    global AUTH_PASS, AUTH_SHA, AUTH_SECRET, AUTH_ON, AUTH_SETUP
     if os.environ.get("TSF_AUTH_PASS") or os.environ.get("TSF_AUTH_SHA256"):
         return False, "密码由环境变量 TSF_AUTH_PASS 控制, 改文件不生效"
     if AUTH_ON and not pw_ok(old or ""):
@@ -22122,6 +22139,7 @@ def auth_set_pass(old, new):
     except OSError as ex:
         return False, "写入失败: %s" % str(ex)[:80]
     AUTH_PASS, AUTH_SHA, AUTH_SECRET, AUTH_ON = n, "", newsec, True
+    AUTH_SETUP = False
     return True, "密码已更新, 其它设备需要重新登录"
 
 
@@ -22930,7 +22948,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/live":
             self._json(live_status())
         elif path == "/api/auth/info":
-            self._json({"user": AUTH_USER, "on": AUTH_ON})
+            self._json({"user": AUTH_USER, "on": AUTH_ON, "setup": AUTH_SETUP})
         elif path == "/api/notify":
             self._json(notify_status())
         elif path == "/api/ota/check":
@@ -24161,7 +24179,7 @@ if __name__ == "__main__":
         sys.exit(0)
     if AUTH_CONF_ERR:
         print("FATAL: %s" % AUTH_CONF_ERR)
-        print("为避免无认证暴露, 服务不启动。修复 %s 后重启 (或重跑 install.sh 重新生成密码)。" % AUTH_FILE)
+        print("为避免无认证暴露, 服务不启动。修复 %s 后重启 (或重跑 install.sh 重新生成配置)。" % AUTH_FILE)
         sys.exit(2)
     # 降低自身被 OOM 杀掉的概率 (合成任务会自己调高优先级先死)
     try:
@@ -24193,7 +24211,8 @@ if __name__ == "__main__":
     # 不会再"OTA 后网页打不开, 只能重启整个 OpenWrt"。
     threading.Thread(target=srv.serve_forever, daemon=True, name="http-server").start()
     print(f"Sentry viewer on 0.0.0.0:{PORT}")
-    print("auth: %s (%s)" % ("ON, user=" + AUTH_USER if AUTH_ON else "OFF - 公网可直接访问!", AUTH_FILE))
+    auth_state = "ON, user=" + AUTH_USER if AUTH_ON else ("SETUP - 首次打开请设置密码" if AUTH_SETUP else "OFF - 公网可直接访问!")
+    print("auth: %s (%s)" % (auth_state, AUTH_FILE))
     try:
         ensure_dirs()
     except OSError as ex:
