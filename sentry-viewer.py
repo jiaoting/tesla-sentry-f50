@@ -540,7 +540,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.018"
+APP_VERSION = "2026.11.28.019"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -20542,7 +20542,9 @@ def preheat_allowed():
     with _live_changed:
         if any(s[3] and s[1] > time.monotonic() for s in _live_clients.values()):
             return False
-    return preview_cores() == 3
+    # 温控降到 2/1 核时仍应慢速转码；只有过热暂停 (0 核) 才停止。
+    # 之前要求必须恰好 3 核，设备温热或读不到热区 (兜底 2 核) 时永久不转。
+    return preview_cores() > 0
 
 
 def live_worker():
@@ -21200,7 +21202,10 @@ def prewarm_loop():
                 t0 = time.time()
                 PREWARM["cur_start"] = t0
                 try:
-                    get_variant(fp, q, slot=False, wanted=preheat_allowed)
+                    # 手动「立即转码」不因实时预览让位，但过热暂停 (0 核) 仍要遵守；
+                    # 自动任务继续使用 preheat_allowed，在实时预览期间主动避让。
+                    wanted = (lambda: preview_cores() > 0) if PREWARM["manual"] else preheat_allowed
+                    get_variant(fp, q, slot=False, wanted=wanted)
                     if _variant_ready(fp, q):
                         n += 1
                         PREWARM["batch_done"] = int(PREWARM.get("batch_done") or 0) + 1
@@ -21247,6 +21252,11 @@ def card_watch_loop():
                 # 卡就绪: 旧布局迁移 + 补建目录, 并修复「开机时卡未挂载导致
                 # 车机 U 盘没有导出」的问题; 同步服务也在这里拉起, 不需要手动卸载再挂载。
                 if last is not True:
+                    if last is False:
+                        # 卸载时暂停过转码；卡重新挂载后立即恢复，不再等 10 分钟空闲计时。
+                        PREWARM["paused"] = False
+                        PREWARM["idle_since"] = None
+                        PREWARM_WAKE.set()
                     try:
                         _ensure_storage_dirs()
                     except Exception:
