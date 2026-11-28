@@ -26,6 +26,13 @@ SERVICES = ('tsf-mount', 'tesla-gadget', 'tesla-live', 'tesla-viewer')
 SCRIPTS = ('mkexfat.py', 'tesla-gadget.sh', 'tesla-usb-start.sh', 'tesla-img.sh', 'tesla-sync.sh',
            'usb-selfheal.sh', 'tsf-storage.sh', 'tsf-maintenance.sh')
 MARKER = 'installation.json'
+FFMPEG_DOWNLOAD_URLS = (
+    'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz',
+    'https://gh-proxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/'
+    'ffmpeg-master-latest-linuxarm64-gpl.tar.xz',
+    'https://gh-proxy.org/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/'
+    'ffmpeg-master-latest-linuxarm64-gpl.tar.xz',
+)
 
 
 def collapse_dup_sentry(value):
@@ -72,6 +79,30 @@ def run(command, **kwargs):
     if result.returncode:
         raise InstallError('%s 失败：%s' % (command[0], result.stderr.strip()[-500:]))
     return result.stdout
+
+
+def download_ffmpeg_archive(archive, user_agent):
+    """官方源优先；连接失败或连续 60 秒没有新数据时切换加速源。"""
+    errors = []
+    for index, url in enumerate(FFMPEG_DOWNLOAD_URLS):
+        try:
+            print('正在下载 FFmpeg：%s' % url, flush=True)
+            request = urllib.request.Request(url, headers={'User-Agent': user_agent})
+            # timeout 同时作用于连接和每次 socket 读取，因此 60 秒无进度会主动断开。
+            with urllib.request.urlopen(request, timeout=60) as stream, open(archive, 'wb') as out:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            if not tarfile.is_tarfile(str(archive)):
+                raise InstallError('下载内容不是有效的 tar.xz 压缩包')
+            return
+        except Exception as exc:
+            errors.append('%s: %s' % (url.split('/')[2], str(exc)[:120]))
+            if index + 1 < len(FFMPEG_DOWNLOAD_URLS):
+                print('下载失败或连续 60 秒无进度，改用加速地址重试', flush=True)
+    raise InstallError('FFmpeg 下载失败：%s' % '；'.join(errors))
 
 
 def write(path, content, mode=0o644, created=None):
@@ -636,7 +667,7 @@ class Installer:
     def install_static_ffmpeg(self):
         """固件的 ffmpeg 是精简构建时, 下载官方 arm64(aarch64) 静态包
         (含 HEVC 解码 + libx264), 直接装到 /usr/bin/ffmpeg、/usr/bin/ffprobe;
-        该目录已有同名文件会被原子替换。只从固定官方地址取, 解压按文件名白名单提取。"""
+        该目录已有同名文件会被原子替换。官方源无进度时切换固定加速地址，解压按文件名白名单提取。"""
         if platform.machine() not in ('aarch64', 'arm64'):
             raise InstallError('静态 FFmpeg 仅提供 aarch64 构建，当前架构为 %s' % platform.machine())
         target = self.path('/usr/bin')
@@ -646,15 +677,12 @@ class Installer:
             ok, _caps = self.ffmpeg_ok(str(binary))
             if ok:
                 return {'ffmpeg': str(binary), 'ffprobe': str(probe)}
-        url = 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz'
         print('固件自带的 FFmpeg 不完整（缺 HEVC 解码或 H.264 编码），'
-              '正在下载官方 aarch64 静态构建并安装到 /usr/bin：%s' % url, flush=True)
+              '正在下载 aarch64 静态构建并安装到 /usr/bin（60 秒无进度自动切换加速地址）', flush=True)
         target.mkdir(parents=True, exist_ok=True)
         archive = Path(tempfile.mkdtemp(prefix='tsf-ff-', dir='/tmp')) / 'ffmpeg.tar.xz'
         try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'tsf-install/1.0'})
-            with urllib.request.urlopen(req, timeout=300) as stream, open(archive, 'wb') as out:
-                shutil.copyfileobj(stream, out)
+            download_ffmpeg_archive(archive, 'tsf-install/1.0')
             with tarfile.open(archive, 'r:xz') as tar:
                 for member in tar.getmembers():
                     name = PurePosixPath(member.name).name

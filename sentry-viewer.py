@@ -540,7 +540,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.019"
+APP_VERSION = "2026.11.28.020"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -1389,17 +1389,47 @@ def _install_dep_packages(kind, manager):
     return last
 
 
+FFMPEG_DOWNLOAD_URLS = (
+    "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz",
+    "https://gh-proxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
+    "ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
+    "https://gh-proxy.org/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
+    "ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
+)
+
+
+def _download_ffmpeg_archive(archive):
+    """官方源优先；连接失败或连续 60 秒没有新数据时切换加速源。"""
+    errors = []
+    for index, url in enumerate(FFMPEG_DOWNLOAD_URLS):
+        try:
+            print("正在下载 FFmpeg: %s" % url, flush=True)
+            request = urllib.request.Request(url, headers={"User-Agent": "tsf-viewer/" + APP_VERSION})
+            # timeout 同时作用于连接和每次 socket 读取，因此 60 秒无进度会主动断开。
+            with urllib.request.urlopen(request, timeout=60) as stream, open(archive, "wb") as out:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            if not tarfile.is_tarfile(archive):
+                raise RuntimeError("下载内容不是有效的 tar.xz 压缩包")
+            return
+        except Exception as ex:
+            errors.append("%s: %s" % (url.split("/")[2], str(ex)[:120]))
+            if index + 1 < len(FFMPEG_DOWNLOAD_URLS):
+                print("下载失败或连续 60 秒无进度，改用加速地址重试", flush=True)
+    raise RuntimeError("FFmpeg 下载失败: %s" % "; ".join(errors))
+
+
 def _install_static_ffmpeg():
     """固件源里的 ffmpeg 是精简构建时, 下载 aarch64 官方静态包到 /usr/bin。"""
     if platform.machine() not in ("aarch64", "arm64"):
         raise RuntimeError("静态 FFmpeg 仅支持 aarch64, 当前为 %s" % platform.machine())
-    url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz"
     tempdir = tempfile.mkdtemp(prefix="tsf-ff-", dir="/tmp")
     archive = os.path.join(tempdir, "ffmpeg.tar.xz")
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": "tsf-viewer/1.0"})
-        with urllib.request.urlopen(request, timeout=300) as stream, open(archive, "wb") as out:
-            shutil.copyfileobj(stream, out)
+        _download_ffmpeg_archive(archive)
         with tarfile.open(archive, "r:xz") as tar:
             for member in tar.getmembers():
                 name = os.path.basename(member.name)
