@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.29.005"
+APP_VERSION = "2026.11.29.006"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -8279,8 +8279,7 @@ function closePlayback() {
   liveReading = false; atEnd = false; wantedPlay = false; editingSeek = false; overviewPosition = null;
   rateOverride = 0;
   lastVideoRatio = 0.75;
-  viewScale = 1; viewTx = 0; viewTy = 0;
-  const vg = byId('vgrid'); if (vg) vg.style.transform = '';
+  resetZoom();
   resetPlaybackClock();
   activeVideos().forEach(v => { v.onended = v.onerror = null; releaseVideo(v); });
   dropPrefetch();
@@ -8471,6 +8470,8 @@ function syncForcedLandscape() {
   // 退出全屏后顶栏重新出现, 立即重算高度, 不等下一次 resize。
   if (window.syncHeaderHeight) window.syncHeaderHeight();
   layoutPlayer();
+  // 全屏/方向切换后重算缩放范围 (移动端全屏允许缩小到把控制条收进屏幕), 并校正越界
+  clampZoom(); applyZoomTransform();
 }
 async function togglePlayerFullscreen() {
   const player = byId('player');
@@ -8562,27 +8563,101 @@ byId('vgrid').addEventListener('click', event => {
   if (suppressPictureClick) { suppressPictureClick = false; return; }
   togglePlay();
 });
-/* 移动端双指缩放播放画面查看细节: 最小 1×(不小于 fit 设备宽度)、最大 4×;
-   缩放后可单指拖动平移。与单指长按快进/点击播放互斥: 检测到第二指即取消长按。 */
+/* 播放画面缩放/平移 (网页 + 移动端, 含全屏):
+   - 放大 (scale>1): 缩放 #vgrid 画面, 被 .vwrap 裁切, 可各方向拖动平移; 最小缩回原始尺寸 (scale=1)。
+   - 缩小 (scale<1): 仅移动端全屏允许, 改缩放滚动容器 .pscroll 并关闭其裁切 (overflow:visible),
+     把画面 + 控制条一起收进屏幕, 直到播放控制按钮全部可见; 缩放后的内容被夹在屏幕范围内。
+   - 桌面端: 鼠标滚轮以光标为锚缩放 (wheel, passive:false), 放大后按住拖动平移。
+   - 移动端: 双指捏合缩放、单指拖动平移; 与单击播放/长按快进互斥 (缩放/拖动时抑制 click、取消长按)。
+   注: 两侧边缘死区 (不触发播放控制) 与 .player .vgrid { touch-action:pan-y } 上下滑动
+       本就作用于同一个 #vgrid, 全屏复用同一 DOM, 故全屏预览界面同样生效。 */
 let viewScale = 1, viewTx = 0, viewTy = 0, pinchActive = false;
 const pinchPointers = new Map();
 let pinchStartDist = 1, pinchStartScale = 1, pinchStartMidX = 0, pinchStartMidY = 0,
-    pinchStartTx = 0, pinchStartTy = 0, panLastX = 0, panLastY = 0, panMoved = false;
-function applyViewTransform() {
-  const g = byId('vgrid');
-  if (viewScale <= 1 && viewTx === 0 && viewTy === 0) g.style.transform = '';
-  else g.style.transform = 'translate(' + viewTx + 'px,' + viewTy + 'px) scale(' + viewScale + ')';
+    pinchStartTx = 0, pinchStartTy = 0, panLastX = 0, panLastY = 0;
+function zoomPane() { return byId('player').querySelector('.pscroll'); }
+// 元素在视口中的布局矩形 (忽略 CSS transform)。缩放锚点必须用布局坐标,
+// 因为 getBoundingClientRect() 返回的是已变换的矩形, 会把当前 transform 算进去。
+function layoutRect(el) {
+  let x = 0, y = 0, o = el;
+  while (o && o !== document.body) { x += o.offsetLeft; y += o.offsetTop; o = o.offsetParent; }
+  return { left: x, top: y, width: el.offsetWidth, height: el.offsetHeight,
+           right: x + el.offsetWidth, bottom: y + el.offsetHeight };
 }
-function clampView() {
-  const g = byId('vgrid');
-  if (viewScale <= 1) { viewScale = 1; viewTx = 0; viewTy = 0; return; }
-  const maxX = (viewScale - 1) * g.clientWidth / 2;
-  const maxY = (viewScale - 1) * g.clientHeight / 2;
+function minViewScale() {
+  const player = byId('player');
+  const fs = !!document.fullscreenElement || player.classList.contains('expanded');
+  // 只有移动端 (coarse pointer) 全屏预览才允许缩小到把控制条收进屏幕; 网页/非全屏最小为 1×。
+  if (!fs || !matchMedia('(pointer:coarse)').matches) return 1;
+  const ps = zoomPane(); if (!ps) return 1;
+  // .pscroll 是滚动容器 (overflow:auto), 播放控制条可能折叠在其裁切区之外,
+  // 故用 scrollWidth/scrollHeight 度量完整内容, 取宽高两个方向都能容纳的较小缩放比。
+  const needW = ps.scrollWidth > window.innerWidth + 2 ? window.innerWidth / ps.scrollWidth : 1;
+  const needH = ps.scrollHeight > window.innerHeight + 2 ? window.innerHeight / ps.scrollHeight : 1;
+  return Math.max(0.4, Math.min(1, needW, needH));
+}
+function zoomHost() { return viewScale >= 1 ? byId('vgrid') : (zoomPane() || byId('vgrid')); }
+function applyZoomTransform() {
+  const vg = byId('vgrid');
+  if (viewScale >= 1) {
+    vg.style.transform = (viewScale === 1 && viewTx === 0 && viewTy === 0) ? '' :
+      'translate(' + viewTx + 'px,' + viewTy + 'px) scale(' + viewScale + ')';
+    const ps = zoomPane(); if (ps) { ps.style.transform = ''; ps.style.transformOrigin = ''; ps.style.overflow = ''; }
+  } else {
+    vg.style.transform = '';
+    const ps = zoomPane();
+    if (ps) {
+      // 缩小状态: 关闭 .pscroll 的裁切, 让折叠在下方/右侧的控制条完整渲染出来
+      ps.style.overflow = 'visible';
+      ps.style.transformOrigin = '0 0';
+      ps.style.transform = 'translate(' + viewTx + 'px,' + viewTy + 'px) scale(' + viewScale + ')';
+    }
+  }
+}
+function clampZoom() {
+  const ms = minViewScale();
+  viewScale = Math.max(ms, Math.min(4, viewScale));
+  if (viewScale <= 1) {
+    const ps = zoomPane();
+    if (ps && viewScale < 1) {
+      // 缩小状态: 把缩放后的完整内容 (.pscroll scrollWidth×scrollHeight) 夹在屏幕内, 保证控制按钮全部可见
+      const r = layoutRect(ps);
+      const cw = ps.scrollWidth * viewScale, ch = ps.scrollHeight * viewScale;
+      const minTx = -r.left, maxTx = window.innerWidth - r.left - cw;
+      const minTy = -r.top, maxTy = window.innerHeight - r.top - ch;
+      if (maxTx < minTx) viewTx = (window.innerWidth - cw) / 2 - r.left;
+      else viewTx = Math.max(minTx, Math.min(maxTx, viewTx));
+      if (maxTy < minTy) viewTy = (window.innerHeight - ch) / 2 - r.top;
+      else viewTy = Math.max(minTy, Math.min(maxTy, viewTy));
+    } else { viewTx = 0; viewTy = 0; }
+    return;
+  }
+  const host = zoomHost();
+  const maxX = (viewScale - 1) * host.clientWidth / 2;
+  const maxY = (viewScale - 1) * host.clientHeight / 2;
   viewTx = Math.max(-maxX, Math.min(maxX, viewTx));
   viewTy = Math.max(-maxY, Math.min(maxY, viewTy));
 }
+function resetZoom() { viewScale = 1; viewTx = 0; viewTy = 0; applyZoomTransform(); }
+function zoomAt(cx, cy, factor) {
+  const ms = minViewScale();
+  const next = Math.max(ms, Math.min(4, viewScale * factor));
+  if (next === viewScale) return;
+  // 跨越 scale=1 时切换缩放宿主 (#vgrid ↔ .pscroll); 在 1× 处两者都是恒等变换, 先归零对齐避免跳变
+  if ((viewScale >= 1) !== (next >= 1)) { viewScale = 1; viewTx = 0; viewTy = 0; }
+  const host = next >= 1 ? byId('vgrid') : (zoomPane() || byId('vgrid'));
+  const r = layoutRect(host);
+  // 以光标/双指中点为锚: 保持锚点下的内容像素不动
+  const ax = (cx - r.left - viewTx) / viewScale;
+  const ay = (cy - r.top - viewTy) / viewScale;
+  viewScale = next;
+  viewTx = cx - r.left - ax * next;
+  viewTy = cy - r.top - ay * next;
+  clampZoom();
+  applyZoomTransform();
+}
 byId('vgrid').addEventListener('pointerdown', e => {
-  if (e.pointerType === 'mouse') return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return; // 仅鼠标左键参与平移
   pinchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pinchPointers.size === 2) {
     releasePictureSpeed();       // 取消单指长按快进/快退
@@ -8595,7 +8670,7 @@ byId('vgrid').addEventListener('pointerdown', e => {
     pinchStartMidY = (pts[0].y + pts[1].y) / 2;
     pinchStartTx = viewTx; pinchStartTy = viewTy;
   } else if (pinchPointers.size === 1 && viewScale > 1) {
-    panLastX = e.clientX; panLastY = e.clientY; panMoved = false;
+    panLastX = e.clientX; panLastY = e.clientY;
   }
 });
 byId('vgrid').addEventListener('pointermove', e => {
@@ -8604,49 +8679,55 @@ byId('vgrid').addEventListener('pointermove', e => {
   if (pinchActive && pinchPointers.size === 2) {
     const pts = [...pinchPointers.values()];
     const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
-    const next = Math.max(1, Math.min(4, pinchStartScale * d / pinchStartDist));
     const mx = (pts[0].x + pts[1].x) / 2, my = (pts[0].y + pts[1].y) / 2;
-    const g = byId('vgrid'), wrap = g.closest('.vwrap');
-    const wr = wrap.getBoundingClientRect();
-    const baseX = wr.left + g.offsetLeft, baseY = wr.top + g.offsetTop;
-    const ax = (pinchStartMidX - baseX - pinchStartTx) / pinchStartScale;
-    const ay = (pinchStartMidY - baseY - pinchStartTy) / pinchStartScale;
+    const ratio = pinchStartScale * d / pinchStartDist;
+    const next = Math.max(minViewScale(), Math.min(4, ratio));
+    // 跨越 scale=1 时切换缩放宿主; 在 1× 处先归零对齐避免跳变
+    if (next !== viewScale && (viewScale >= 1) !== (next >= 1)) { viewScale = 1; viewTx = 0; viewTy = 0; }
+    const host = next >= 1 ? byId('vgrid') : (zoomPane() || byId('vgrid'));
+    const r = layoutRect(host);
+    // 以双指当前中点为锚: 中点下内容像素保持不动 (同时兼顾中点移动带来的平移)
+    const ax = (mx - r.left - viewTx) / viewScale;
+    const ay = (my - r.top - viewTy) / viewScale;
     viewScale = next;
-    viewTx = mx - baseX - ax * next;
-    viewTy = my - baseY - ay * next;
-    clampView();
-    applyViewTransform();
+    viewTx = mx - r.left - ax * next;
+    viewTy = my - r.top - ay * next;
+    clampZoom();
+    applyZoomTransform();
     e.preventDefault();
   } else if (!pinchActive && pinchPointers.size === 1 && viewScale > 1) {
     const dx = e.clientX - panLastX, dy = e.clientY - panLastY;
     panLastX = e.clientX; panLastY = e.clientY;
     if (Math.abs(dx) + Math.abs(dy) > 2) {
-      panMoved = true;
       releasePictureSpeed();   // 拖动开始即取消长按
       suppressPictureClick = true;
       viewTx += dx; viewTy += dy;
-      clampView();
-      applyViewTransform();
+      clampZoom();
+      applyZoomTransform();
       e.preventDefault();
     }
   }
 }, { passive: false });
-byId('vgrid').addEventListener('pointerup', e => {
+function onPinchPointerEnd(e) {
   pinchPointers.delete(e.pointerId);
   if (pinchPointers.size < 2) pinchActive = false;
   if (pinchPointers.size === 1 && viewScale > 1) {
     const p = [...pinchPointers.values()][0];
-    panLastX = p.x; panLastY = p.y; panMoved = false;
+    panLastX = p.x; panLastY = p.y;
   }
-});
-byId('vgrid').addEventListener('pointercancel', e => {
-  pinchPointers.delete(e.pointerId);
-  if (pinchPointers.size < 2) pinchActive = false;
-  if (pinchPointers.size === 1 && viewScale > 1) {
-    const p = [...pinchPointers.values()][0];
-    panLastX = p.x; panLastY = p.y; panMoved = false;
-  }
-});
+}
+byId('vgrid').addEventListener('pointerup', onPinchPointerEnd);
+byId('vgrid').addEventListener('pointercancel', onPinchPointerEnd);
+byId('vgrid').addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') onPinchPointerEnd(e); });
+/* 桌面端: 鼠标滚轮缩放, 以光标为锚; 到达缩放极限时不拦截, 交还给页面滚动 */
+byId('vgrid').addEventListener('wheel', e => {
+  if (!curClips.length) return;
+  const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+  const next = Math.max(minViewScale(), Math.min(4, viewScale * factor));
+  if (next === viewScale) return; // 已到最小/最大缩放, 不拦截, 让页面正常滚动
+  e.preventDefault();
+  zoomAt(e.clientX, e.clientY, factor);
+}, { passive: false });
 /* 空格: 短按播放/暂停, 长按临时 3×; 松开后回到长按前的播放/暂停状态 */
 let spaceHoldTimer = 0, spaceHolding = false, spacePressActive = false, spacePrevPlaying = false;
 function releaseSpaceHold() {
