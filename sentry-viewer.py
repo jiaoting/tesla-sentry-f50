@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.29.008"
+APP_VERSION = "2026.11.29.009"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -5883,6 +5883,18 @@ function dropPrefetch() {
 /* 缓存上一片段的真实画面比例, 切换片段(新视频尚未加载)时沿用而非回落默认 0.75,
    避免 grid 高度先按默认算、loadedmetadata 后又按真实比例重算, 导致播放页面上下跳动。 */
 let lastVideoRatio = 0.75;
+/* 播放器尚未完成布局时 (grid.clientWidth 为 0), 按页面宽度预估网格宽度,
+   让 gridAutoRows / 占位高度直接接近最终值, 避免打开播放界面时画面从小突然变大。 */
+function predictGridWidth() {
+  const desktop = matchMedia('(min-width:1000px)').matches;
+  let w = window.innerWidth || document.documentElement.clientWidth || 1024;
+  if (desktop) {
+    // .watch-list 侧边栏: clamp(230px, 24vw, 350px)
+    w -= Math.max(230, Math.min(350, Math.round(w * 0.24)));
+  }
+  w -= 48; // .pscroll 左右内边距
+  return Math.max(320, Math.min(1200, w)); // .vwrap max-width:1200
+}
 function layoutPlayer() {
   const grid = byId('vgrid'), count = grid.children.length;
   const player = byId('player');
@@ -5893,9 +5905,18 @@ function layoutPlayer() {
   const listVisible = matchMedia('(max-width:999px)').matches
     ? player.classList.contains('library-open') : !player.classList.contains('library-collapsed');
   player.querySelector('.list-toggle').setAttribute('aria-expanded', String(listVisible));
-  if (!count) return;
+  // 加载占位 (还没有画面格子): 按页面宽度预估并预留高度, 避免画面加载出来时从小突然变大
+  if (!count) {
+    const w = grid.clientWidth || predictGridWidth();
+    grid.style.minHeight = Math.max(160, w * (lastVideoRatio || 0.5625)) + 'px';
+    layoutTelhud();
+    return;
+  }
+  grid.style.minHeight = '';
   const [cols, rows] = gridDims(count);
-  const width = grid.clientWidth;
+  // 播放器刚 display:flex / 片段缓存命中时布局可能尚未发生, grid.clientWidth 为 0;
+  // 按页面宽度预估, 避免行高塌成 1px 后下一帧又突然变大。
+  const width = grid.clientWidth || predictGridWidth();
   const video = grid.querySelector('video');
   const ratio = (video && video.videoWidth) ? (lastVideoRatio = video.videoHeight / video.videoWidth) : lastVideoRatio;
   const landscapePhone = (viewW > viewH && viewH <= 550) ||
@@ -6086,6 +6107,8 @@ async function openPlayer(ev, live = false, camera = '', clipName = '') {
   if (window.syncHeaderHeight) window.syncHeaderHeight();
   byId('player').classList.add('open');
   document.body.classList.add('watching');
+  // 打开即按页面宽度布局一次, 让加载占位直接是最终高度, 避免画面从小突然变大
+  requestAnimationFrame(() => { if (byId('player').classList.contains('open')) layoutPlayer(); });
   byId('livep').hidden = !live;
   byId('ptitle').textContent = live ? t('实时滚动记录') : evTime(ev);
   byId('vgrid').textContent = '正在加载录像…';
@@ -8504,9 +8527,17 @@ async function togglePlayerFullscreen() {
 byId('screenbtn').onclick = togglePlayerFullscreen;
 let pictureHoldTimer = 0, pictureHolding = false, picturePrevPlaying = false, suppressPictureClick = false;
 let pictureRewindTimer = 0;
+/* 长按已触发后的速率调节: pictureHoldDir 1=快进 -1=快退, pictureHoldRate 为当前速率大小。
+   快进直接改 playbackRate; 快退由回跳定时器读取 pictureHoldRate 实现调速。 */
+let pictureHoldDir = 0, pictureHoldRate = 0;
+let rateSlideAnchorX = 0, rateSlideAnchorY = 0, rateSlideBase = 0, lastFlashRate = 0;
+const RATE_SLIDE_TRIGGER = 22;       // 触发速率调节的最小位移 (px), 轻微抖动不改速率
+const RATE_SLIDE_PX_PER_OCTAVE = 72; // 每移动多少像素速率 ×2 或 ÷2
 function releasePictureSpeed() {
   clearTimeout(pictureHoldTimer); pictureHoldTimer = 0;
   clearInterval(pictureRewindTimer); pictureRewindTimer = 0;
+  const vg = byId('vgrid'); if (vg) vg.style.touchAction = ''; // 恢复原生滚动
+  pictureHoldDir = 0; pictureHoldRate = 0; rateSlideBase = 0; lastFlashRate = 0;
   if (!pictureHolding) return;
   pictureHolding = false; suppressPictureClick = true;
   rateOverride = 0;
@@ -8515,6 +8546,30 @@ function releasePictureSpeed() {
   if (!picturePrevPlaying) pauseAll();
   else if (!wantedPlay) playAll();
   flashPlayer(baseRate + '×');
+}
+/* 长按已触发后: 上下左右滑动调节速率 (右移/上移加快, 左移/下移减慢)。
+   需先滑出 RATE_SLIDE_TRIGGER 才生效, 区间内回到基准速率; 画面中心实时显示当前速率。 */
+function showHoldRate(r) {
+  const shown = Math.round(r * 10) / 10;
+  if (shown === lastFlashRate) return;
+  lastFlashRate = shown;
+  flashPlayer((Number.isInteger(shown) ? shown : shown.toFixed(1)) + '× ' + (pictureHoldDir > 0 ? '快进' : '快退'));
+}
+function applyHoldRate(r) {
+  pictureHoldRate = r;
+  rateOverride = r;
+  if (pictureHoldDir > 0) applyRate(r); // 快退: 回跳定时器读取 pictureHoldRate, 无需重设
+  showHoldRate(r);
+}
+function adjustHoldRate(cx, cy) {
+  const disp = (cx - rateSlideAnchorX) - (cy - rateSlideAnchorY); // 右/上为正, 左/下为负
+  if (Math.abs(disp) < RATE_SLIDE_TRIGGER) {
+    if (pictureHoldRate !== rateSlideBase) applyHoldRate(rateSlideBase);
+    return;
+  }
+  const steps = (Math.abs(disp) - RATE_SLIDE_TRIGGER) / RATE_SLIDE_PX_PER_OCTAVE;
+  const r = Math.max(0.5, Math.min(16, rateSlideBase * Math.pow(2, (disp > 0 ? 1 : -1) * steps)));
+  applyHoldRate(r);
 }
 let pictureHoldStartX = 0, pictureHoldStartY = 0;
 /* 画面支持鼠标与触屏: 单击播放/暂停; 左半屏长按快退, 右半屏长按快进 (含两侧边缘)。
@@ -8539,37 +8594,49 @@ byId('vgrid').addEventListener('pointerdown', event => {
     pictureHoldTimer = 0;
     pictureHolding = true;
     picturePrevPlaying = wantedPlay && !atEnd;
+    pictureHoldDir = dir;
     const rate = holdRate();
+    pictureHoldRate = rate;
+    rateSlideBase = rate;
+    rateSlideAnchorX = pictureHoldStartX;
+    rateSlideAnchorY = pictureHoldStartY;
+    byId('vgrid').style.touchAction = 'none'; // 长按期间屏蔽原生滚动, 上下左右滑动都能调速
     rateOverride = rate;
     if (dir > 0) {
       if (!picturePrevPlaying) playAll();
       applyRate(rate);
     } else {
-      // 浏览器不支持倒放, 快退用按倍率周期性回跳实现
+      // 浏览器不支持倒放, 快退用按倍率周期性回跳实现; 速率随滑动调节 (读 pictureHoldRate)
       pauseAll();
       let last = 0;
       pictureRewindTimer = setInterval(() => {
         const now = performance.now();
         const dt = last ? Math.min(1, (now - last) / 1000) : 0.25;
         last = now;
-        seekRelative(-rate * dt);
+        seekRelative(-pictureHoldRate * dt);
       }, 250);
     }
-    flashPlayer(rate + '× ' + (dir > 0 ? '快进' : '快退'));
+    showHoldRate(rate);
   }, 450);
 });
 byId('vgrid').addEventListener('pointerup', releasePictureSpeed);
 byId('vgrid').addEventListener('pointercancel', releasePictureSpeed);
 byId('vgrid').addEventListener('pointerleave', releasePictureSpeed);
-/* 按下后手指/鼠标一旦明显移动 (滚动或拖动), 取消长按并抑制点击:
-   两侧边缘上下滑动、或页面整体滚动时触摸到画面, 都不会触发快进/快退或播放/暂停。 */
+/* 长按未触发时: 手指明显移动 (滚动/拖动) 取消长按并抑制点击, 避免误触;
+   长按已触发后: 移动改为调节播放速率 (见 adjustHoldRate), 不再取消长按。 */
 byId('vgrid').addEventListener('pointermove', event => {
-  if ((!pictureHoldTimer && !pictureHolding) || pinchActive) return;
+  if (pinchActive) return;
+  if (pictureHolding) {
+    adjustHoldRate(event.clientX, event.clientY);
+    event.preventDefault();
+    return;
+  }
+  if (!pictureHoldTimer) return;
   if (Math.hypot(event.clientX - pictureHoldStartX, event.clientY - pictureHoldStartY) > 10) {
     releasePictureSpeed();
     suppressPictureClick = true;
   }
-});
+}, { passive: false });
 /* 屏蔽触摸长按的浏览器菜单/选中, 否则长按到 450ms 前就被原生菜单打断, 3× 快进不生效 */
 byId('vgrid').addEventListener('contextmenu', event => { if (curClips.length) event.preventDefault(); });
 byId('vgrid').addEventListener('click', event => {
@@ -8695,7 +8762,7 @@ byId('vgrid').addEventListener('pointermove', e => {
       applyZoomTransform();
       e.preventDefault();
     }
-  } else if (!pinchActive && pinchPointers.size === 1 && viewScale !== 1) {
+  } else if (!pinchActive && !pictureHolding && pinchPointers.size === 1 && viewScale !== 1) {
     const dx = e.clientX - panLastX, dy = e.clientY - panLastY;
     panLastX = e.clientX; panLastY = e.clientY;
     if (Math.abs(dx) + Math.abs(dy) > 2) {
