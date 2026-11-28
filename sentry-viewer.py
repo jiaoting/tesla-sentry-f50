@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.29.006"
+APP_VERSION = "2026.11.29.007"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -8516,22 +8516,27 @@ function releasePictureSpeed() {
   else if (!wantedPlay) playAll();
   flashPlayer(baseRate + '×');
 }
-/* 画面支持鼠标与触屏: 单击播放/暂停; 左半屏长按快退, 右半屏长按快进。
-   倍率跟随右下方播放速率 (1× 时默认 3×)。 */
+let pictureHoldStartX = 0, pictureHoldStartY = 0;
+/* 画面支持鼠标与触屏: 单击播放/暂停; 左半屏长按快退, 右半屏长按快进 (含两侧边缘)。
+   倍率跟随右下方播放速率 (1× 时默认 3×)。
+   两侧边缘: 单击不触发播放/暂停 (留给页面滚动), 但长按仍可快进/快退;
+   按下后一旦手指明显移动 (滚动/拖动), 取消长按并抑制点击, 避免误触快进/快退或播放/暂停。 */
 byId('vgrid').addEventListener('pointerdown', event => {
   if (event.button !== 0 || event.target.closest('button') || !curClips.length) return;
   if (pinchActive) return;   // 双指缩放进行中, 不启动长按快进/快退
   suppressPictureClick = false;
+  pictureHoldStartX = event.clientX;
+  pictureHoldStartY = event.clientY;
   const rect = byId('vgrid').getBoundingClientRect();
-  /* 画面左右两侧边缘留给页面上下滚动: 此区域不触发单击播放/暂停与长按快进快退, 避免误触。
-     中央区域仍可单击播放/暂停、左半长按快退、右半长按快进。 */
   const edge = Math.max(40, Math.min(64, rect.width * 0.14));
+  // 两侧边缘: 点击不触发播放/暂停 (留给上下滚动), 但长按仍可快进/快退
   if (event.clientX < rect.left + edge || event.clientX > rect.right - edge) {
-    suppressPictureClick = true; return;
+    suppressPictureClick = true;
   }
   const dir = (event.clientX - rect.left) < rect.width / 2 ? -1 : 1;
   clearTimeout(pictureHoldTimer);
   pictureHoldTimer = setTimeout(() => {
+    pictureHoldTimer = 0;
     pictureHolding = true;
     picturePrevPlaying = wantedPlay && !atEnd;
     const rate = holdRate();
@@ -8556,6 +8561,15 @@ byId('vgrid').addEventListener('pointerdown', event => {
 byId('vgrid').addEventListener('pointerup', releasePictureSpeed);
 byId('vgrid').addEventListener('pointercancel', releasePictureSpeed);
 byId('vgrid').addEventListener('pointerleave', releasePictureSpeed);
+/* 按下后手指/鼠标一旦明显移动 (滚动或拖动), 取消长按并抑制点击:
+   两侧边缘上下滑动、或页面整体滚动时触摸到画面, 都不会触发快进/快退或播放/暂停。 */
+byId('vgrid').addEventListener('pointermove', event => {
+  if ((!pictureHoldTimer && !pictureHolding) || pinchActive) return;
+  if (Math.hypot(event.clientX - pictureHoldStartX, event.clientY - pictureHoldStartY) > 10) {
+    releasePictureSpeed();
+    suppressPictureClick = true;
+  }
+});
 /* 屏蔽触摸长按的浏览器菜单/选中, 否则长按到 450ms 前就被原生菜单打断, 3× 快进不生效 */
 byId('vgrid').addEventListener('contextmenu', event => { if (curClips.length) event.preventDefault(); });
 byId('vgrid').addEventListener('click', event => {
@@ -8719,9 +8733,11 @@ function onPinchPointerEnd(e) {
 byId('vgrid').addEventListener('pointerup', onPinchPointerEnd);
 byId('vgrid').addEventListener('pointercancel', onPinchPointerEnd);
 byId('vgrid').addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') onPinchPointerEnd(e); });
-/* 桌面端: 鼠标滚轮缩放, 以光标为锚; 到达缩放极限时不拦截, 交还给页面滚动 */
+/* 桌面端: 仅 Ctrl+滚轮 / Mac Cmd+滚轮 (及触控板捏合, 浏览器会置 ctrlKey=true) 缩放画面, 以光标为锚;
+   普通滚轮不拦截, 留给页面滚动。到达缩放极限时也不拦截。 */
 byId('vgrid').addEventListener('wheel', e => {
   if (!curClips.length) return;
+  if (!(e.ctrlKey || e.metaKey)) return; // 仅修饰键 + 滚轮触发缩放; 触控板捏合时浏览器置 ctrlKey=true
   const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
   const next = Math.max(minViewScale(), Math.min(4, viewScale * factor));
   if (next === viewScale) return; // 已到最小/最大缩放, 不拦截, 让页面正常滚动
