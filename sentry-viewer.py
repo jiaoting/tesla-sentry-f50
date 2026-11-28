@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.29.002"
+APP_VERSION = "2026.11.29.003"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -3246,7 +3246,7 @@ body.watching { overflow:hidden; }
 .player .ptitle { color:var(--text); font-size:14px; font-weight:600; }
 .player .pscroll { padding:16px clamp(12px,3vw,32px) max(18px,env(safe-area-inset-bottom)); gap:10px; }
 .player .vwrap { order:0; border-radius:8px; }
-.player .vgrid { background:#101215; touch-action:none; -webkit-touch-callout:none; user-select:none; -webkit-user-select:none; }
+.player .vgrid { background:#101215; touch-action:none; -webkit-touch-callout:none; user-select:none; -webkit-user-select:none; transform-origin:0 0; will-change:transform; }
 .player .vgrid.loading { display:flex; align-items:flex-end; justify-content:flex-end; gap:10px; min-height:26vh; padding:12px; color:#d0d6dc; }
 .player .vgrid.loading.load-error { align-items:center; justify-content:center; }
 .player .vcell { aspect-ratio:auto; min-width:0; min-height:0; }
@@ -5879,6 +5879,9 @@ function dropPrefetch() {
   prefetch = null;
 }
 
+/* 缓存上一片段的真实画面比例, 切换片段(新视频尚未加载)时沿用而非回落默认 0.75,
+   避免 grid 高度先按默认算、loadedmetadata 后又按真实比例重算, 导致播放页面上下跳动。 */
+let lastVideoRatio = 0.75;
 function layoutPlayer() {
   const grid = byId('vgrid'), count = grid.children.length;
   const player = byId('player');
@@ -5893,7 +5896,7 @@ function layoutPlayer() {
   const [cols, rows] = gridDims(count);
   const width = grid.clientWidth;
   const video = grid.querySelector('video');
-  const ratio = video && video.videoWidth ? video.videoHeight / video.videoWidth : 0.75;
+  const ratio = (video && video.videoWidth) ? (lastVideoRatio = video.videoHeight / video.videoWidth) : lastVideoRatio;
   const landscapePhone = (viewW > viewH && viewH <= 550) ||
     matchMedia('(orientation:landscape) and (max-height:550px)').matches;
   const immersive = !!document.fullscreenElement || byId('player').classList.contains('expanded');
@@ -8274,6 +8277,9 @@ function closePlayback() {
   clearInterval(syncTimer); clearInterval(liveTimer);
   liveReading = false; atEnd = false; wantedPlay = false; editingSeek = false; overviewPosition = null;
   rateOverride = 0;
+  lastVideoRatio = 0.75;
+  viewScale = 1; viewTx = 0; viewTy = 0;
+  const vg = byId('vgrid'); if (vg) vg.style.transform = '';
   resetPlaybackClock();
   activeVideos().forEach(v => { v.onended = v.onerror = null; releaseVideo(v); });
   dropPrefetch();
@@ -8512,6 +8518,7 @@ function releasePictureSpeed() {
    倍率跟随右下方播放速率 (1× 时默认 3×)。 */
 byId('vgrid').addEventListener('pointerdown', event => {
   if (event.button !== 0 || event.target.closest('button') || !curClips.length) return;
+  if (pinchActive) return;   // 双指缩放进行中, 不启动长按快进/快退
   suppressPictureClick = false;
   const rect = byId('vgrid').getBoundingClientRect();
   const dir = (event.clientX - rect.left) < rect.width / 2 ? -1 : 1;
@@ -8547,6 +8554,91 @@ byId('vgrid').addEventListener('click', event => {
   if (event.target.closest('button')) return;
   if (suppressPictureClick) { suppressPictureClick = false; return; }
   togglePlay();
+});
+/* 移动端双指缩放播放画面查看细节: 最小 1×(不小于 fit 设备宽度)、最大 4×;
+   缩放后可单指拖动平移。与单指长按快进/点击播放互斥: 检测到第二指即取消长按。 */
+let viewScale = 1, viewTx = 0, viewTy = 0, pinchActive = false;
+const pinchPointers = new Map();
+let pinchStartDist = 1, pinchStartScale = 1, pinchStartMidX = 0, pinchStartMidY = 0,
+    pinchStartTx = 0, pinchStartTy = 0, panLastX = 0, panLastY = 0, panMoved = false;
+function applyViewTransform() {
+  const g = byId('vgrid');
+  if (viewScale <= 1 && viewTx === 0 && viewTy === 0) g.style.transform = '';
+  else g.style.transform = 'translate(' + viewTx + 'px,' + viewTy + 'px) scale(' + viewScale + ')';
+}
+function clampView() {
+  const g = byId('vgrid');
+  if (viewScale <= 1) { viewScale = 1; viewTx = 0; viewTy = 0; return; }
+  const maxX = (viewScale - 1) * g.clientWidth / 2;
+  const maxY = (viewScale - 1) * g.clientHeight / 2;
+  viewTx = Math.max(-maxX, Math.min(maxX, viewTx));
+  viewTy = Math.max(-maxY, Math.min(maxY, viewTy));
+}
+byId('vgrid').addEventListener('pointerdown', e => {
+  if (e.pointerType === 'mouse') return;
+  pinchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinchPointers.size === 2) {
+    releasePictureSpeed();       // 取消单指长按快进/快退
+    suppressPictureClick = true; // 抑制缩放结束后合成的 click, 避免误触发播放/暂停
+    pinchActive = true;
+    const pts = [...pinchPointers.values()];
+    pinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+    pinchStartScale = viewScale;
+    pinchStartMidX = (pts[0].x + pts[1].x) / 2;
+    pinchStartMidY = (pts[0].y + pts[1].y) / 2;
+    pinchStartTx = viewTx; pinchStartTy = viewTy;
+  } else if (pinchPointers.size === 1 && viewScale > 1) {
+    panLastX = e.clientX; panLastY = e.clientY; panMoved = false;
+  }
+});
+byId('vgrid').addEventListener('pointermove', e => {
+  if (!pinchPointers.has(e.pointerId)) return;
+  pinchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinchActive && pinchPointers.size === 2) {
+    const pts = [...pinchPointers.values()];
+    const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+    const next = Math.max(1, Math.min(4, pinchStartScale * d / pinchStartDist));
+    const mx = (pts[0].x + pts[1].x) / 2, my = (pts[0].y + pts[1].y) / 2;
+    const g = byId('vgrid'), wrap = g.closest('.vwrap');
+    const wr = wrap.getBoundingClientRect();
+    const baseX = wr.left + g.offsetLeft, baseY = wr.top + g.offsetTop;
+    const ax = (pinchStartMidX - baseX - pinchStartTx) / pinchStartScale;
+    const ay = (pinchStartMidY - baseY - pinchStartTy) / pinchStartScale;
+    viewScale = next;
+    viewTx = mx - baseX - ax * next;
+    viewTy = my - baseY - ay * next;
+    clampView();
+    applyViewTransform();
+    e.preventDefault();
+  } else if (!pinchActive && pinchPointers.size === 1 && viewScale > 1) {
+    const dx = e.clientX - panLastX, dy = e.clientY - panLastY;
+    panLastX = e.clientX; panLastY = e.clientY;
+    if (Math.abs(dx) + Math.abs(dy) > 2) {
+      panMoved = true;
+      releasePictureSpeed();   // 拖动开始即取消长按
+      suppressPictureClick = true;
+      viewTx += dx; viewTy += dy;
+      clampView();
+      applyViewTransform();
+      e.preventDefault();
+    }
+  }
+}, { passive: false });
+byId('vgrid').addEventListener('pointerup', e => {
+  pinchPointers.delete(e.pointerId);
+  if (pinchPointers.size < 2) pinchActive = false;
+  if (pinchPointers.size === 1 && viewScale > 1) {
+    const p = [...pinchPointers.values()][0];
+    panLastX = p.x; panLastY = p.y; panMoved = false;
+  }
+});
+byId('vgrid').addEventListener('pointercancel', e => {
+  pinchPointers.delete(e.pointerId);
+  if (pinchPointers.size < 2) pinchActive = false;
+  if (pinchPointers.size === 1 && viewScale > 1) {
+    const p = [...pinchPointers.values()][0];
+    panLastX = p.x; panLastY = p.y; panMoved = false;
+  }
 });
 /* 空格: 短按播放/暂停, 长按临时 3×; 松开后回到长按前的播放/暂停状态 */
 let spaceHoldTimer = 0, spaceHolding = false, spacePressActive = false, spacePrevPlaying = false;
