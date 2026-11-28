@@ -540,7 +540,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.022"
+APP_VERSION = "2026.11.28.023"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -3137,6 +3137,19 @@ body.watching { overflow:hidden; }
   .player .vwrap { grid-column:1; grid-row:1 / span 4; align-self:start; }
   .player .video-toolbar,.player .transport,.player .tpanel,.player .infocard { grid-column:2; margin:0; }
   .player .video-toolbar .cambar { flex-wrap:wrap; }
+  /* 横屏全屏驾驶信息固定为一行；内容较宽时在信息条内部横向滑动，不撑高页面。 */
+  :root:fullscreen .player .telhud,.player.expanded .telhud {
+    flex:1 0 100%; width:100%; max-width:100%; margin:4px 0 0;
+    flex-wrap:nowrap; justify-content:flex-start; overflow-x:auto; scrollbar-width:none;
+    -webkit-overflow-scrolling:touch;
+  }
+  :root:fullscreen .player .telhud::-webkit-scrollbar,.player.expanded .telhud::-webkit-scrollbar { display:none; }
+  :root:fullscreen .player .telhud .th-line,.player.expanded .telhud .th-line {
+    display:flex; flex:0 0 auto; width:auto; min-width:max-content; flex-wrap:nowrap;
+    align-items:center; justify-content:flex-start; gap:6px;
+  }
+  :root:fullscreen .player .telhud .th-place,.player.expanded .telhud .th-place { flex:0 0 auto; }
+  :root:fullscreen .player .telhud #th-loc,.player.expanded .telhud #th-loc { white-space:nowrap; }
   .player .ptop { min-height:32px; } .player .cambar button { min-height:30px; padding:4px 9px; }
   .transport { padding:0; } .clockline output { font-size:15px; }
 }
@@ -6621,6 +6634,9 @@ function requestRoad(lat, lon) {
       if (loc) { loc.textContent = j.road; loc.title = j.address || j.road; }
       const road = document.getElementById('th-road');
       if (road) road.textContent = [roadInfo.parts.province, roadInfo.parts.city, roadInfo.parts.district, j.road].filter(Boolean).join('');
+      // 地址只在更新后重排一次，避免播放逐帧刷新导致信息条跳动。
+      layoutTelhud();
+      syncTelWidth();
     }).catch(() => {});
 }
 /* 详细数据宽度与上方显示条保持一致 (显示条宽度变化时也实时跟随) */
@@ -6807,8 +6823,11 @@ function renderHud(f) {
     th('th-acc').className = 'th-acc' + (state ? ' ' + state : '');
     th('th-acct').className = 'th-acct' + (state ? ' ' + state : '');
     th('th-acct').textContent = state === 'acc' ? '加速' : state === 'dec' ? '减速' : '定速';
-    th('telhud').classList.add('show');
-    layoutTelhud();
+    const hud = th('telhud');
+    const firstShow = !hud.classList.contains('show');
+    hud.classList.add('show');
+    // 不要逐帧移除/恢复 wrap：滚动播放页时重排会让后续详情按钮瞬移并造成误触。
+    if (firstShow) layoutTelhud();
     syncTelWidth();
     requestRoad(lat, lon);
   }
