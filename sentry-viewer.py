@@ -538,7 +538,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.008"
+APP_VERSION = "2026.11.28.009"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -4014,7 +4014,8 @@ body.settings-open { overflow:hidden; }
     <div class="hint">上传的音频先保存到归档区 <b>audio/</b> 目录，可上传多个用于筛选。格式仅 wav / mp3，单个 &lt;1MB；未连接车机U盘时，点「设为锁车声音」会自动连接并写入根目录 LockChime.wav（mp3 自动转 wav，覆盖同名文件），写完自动恢复车机导出；手动连接后则保持管理状态，可点「恢复车机导出」。</div>
     <div id="audio-usb-status" style="margin-bottom:10px" aria-live="polite"></div>
     <div class="tool-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <label class="fm-tool upbtn accent-up" style="margin:0"><svg class="ic"><use href="#i-upload"/></svg>上传音频 (wav/mp3, &lt;1MB)<input type="file" id="audio-file" accept=".wav,.mp3" hidden multiple></label>
+      <button type="button" class="fm-tool upbtn accent-up" id="audio-upbtn" style="margin:0" onclick="document.getElementById('audio-file').click()"><svg class="ic"><use href="#i-upload"/></svg>上传音频 (wav/mp3, &lt;1MB)</button>
+      <input type="file" id="audio-file" accept=".wav,.mp3" hidden multiple>
       <button class="mini" id="audio-rename-btn" onclick="audioRenameSel()" disabled>重命名</button>
       <button class="mini danger" id="audio-del-btn" onclick="audioDeleteSel()" disabled>删除</button>
       <span class="hint" id="audio-selcount" style="margin:0">已选 0 项</span>
@@ -4030,7 +4031,8 @@ body.settings-open { overflow:hidden; }
   <div id="tab-wraps" style="display:none">
     <div class="hint">车机车辆涂装/牌照图片: 仅支持 PNG, 直接写入车机U盘根目录 Wraps/ (车机端设置里选)。首次上传会自动创建 Wraps 目录。连接时会临时断开车机读取几秒, 用完点「恢复车机导出」; 5 分钟无操作也会自动恢复。</div>
     <div id="wraps-status" style="margin-bottom:10px" aria-live="polite"></div>
-    <label class="fm-tool upbtn accent-up" id="wraps-upbtn"><svg class="ic"><use href="#i-upload"/></svg>上传涂装图片到 Wraps/ (仅 PNG, ≤100MB)<input type="file" id="wraps-file" accept=".png" hidden multiple></label>
+    <button type="button" class="fm-tool upbtn accent-up" id="wraps-upbtn" onclick="document.getElementById('wraps-file').click()"><svg class="ic"><use href="#i-upload"/></svg>上传涂装图片到 Wraps/ (仅 PNG, ≤100MB)</button>
+    <input type="file" id="wraps-file" accept=".png" hidden multiple>
     <div id="wraps-grid" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px"></div>
   </div>
   <div id="tab-files">
