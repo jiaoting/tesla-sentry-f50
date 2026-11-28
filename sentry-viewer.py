@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.034"
+APP_VERSION = "2026.11.28.035"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -6141,11 +6141,11 @@ function setCam(cam) {
 }
 
 const hlsPreview = document.createElement('video').canPlayType('application/vnd.apple.mpegurl');
-/* 起播前最多缓冲 4 秒（配合 5 秒等待上限），预读 30 秒，多路同步只要 1.2 秒即可继续播，
-   避免以前每路都要求 10 秒缓冲、任一路慢一点就把全部画面按停造成周期性卡顿。 */
-const PREVIEW_START_SECONDS = 4;
-const PREVIEW_HD_START_SECONDS = 4;
-const PREVIEW_HD_RECOVERY_SECONDS = 4;
+/* 首片转好就立即起播（约 1 秒缓冲），不再等 4 秒；转码跟不上时才退回到最多等 5 秒。
+   预读 30 秒，多路同步只要 1.2 秒即可继续播，避免任一路慢一点就把全部画面按停。 */
+const PREVIEW_START_SECONDS = 1;
+const PREVIEW_HD_START_SECONDS = 1;
+const PREVIEW_HD_RECOVERY_SECONDS = 2;
 const PREVIEW_READ_AHEAD_SECONDS = 30;
 const PREVIEW_HD_READ_AHEAD_SECONDS = 30;
 const PREVIEW_START_WAIT_MS = 5000;
@@ -6392,7 +6392,7 @@ async function prepareNext() {
   const videos = activeVideos().filter(v => !v.ended && v.readyState >= 1);
   const lead = videos.length ? Math.min(...videos.map(bufferAhead)) : 0;
   const remaining = Math.max(0, currentClip().length - clipOffset);
-  const need = parts ? Math.max(20, previewLeadForQuality() * baseRate + 8)
+  const need = parts ? Math.max(25, previewLeadForQuality() * baseRate + 8)
                      : Math.max(6, baseRate * 2 + 2);
   if (parts) {
     // 分片转码只在快到片尾时预读下一段, 避免实时滚动记录持续满载转码
@@ -15087,6 +15087,9 @@ RES_SCALE = {"360p": (480, 360, 520), "480p": (640, 480, 900), "720p": (960, 720
 # F50 转码保持单任务、默认 3 线程，与正常温控档的 3 核一致，避免六路起播时瞬时压满更多核心。
 # 内存或散热紧张时可通过 TSF_TR_THREADS 进一步降低。
 TR_THREADS = max(1, min(8, int(os.environ.get("TSF_TR_THREADS", "3"))))
+# 播放分片转码只用几百毫秒到几秒，正常温度下允许比整段转码多 1 核（默认 4 核），
+# 尽快把缓冲追到 4 倍速；温控降档、过热时仍按原档位收缩。可用 TSF_PART_THREADS 调整。
+PART_THREADS = max(1, min(8, int(os.environ.get("TSF_PART_THREADS", "4"))))
 # 编码参数版本号: 参与缓存 key。改码率/帧率等参数时 +1, 旧缓存自动失效重新生成。
 RES_ENC_VER = "3"   # v3: 提高码率与峰值上限 (320/500/900 -> 520/900/1500), 减少动态画面方块
 RES_DIR = TRANSCODE_DIR  # 转码缓存放在归档区内(数据卡), 删归档视频时对应缓存会自动清理
@@ -20770,6 +20773,15 @@ def preview_memory_available():
     return True
 
 
+def part_encode_cores():
+    """播放分片转码可用核心数：正常温度给 4 核，尽量跑到 4 倍速；
+    温度偏高（>=70℃）或温控已降档时沿用原有 3/2/1 核，避免为了起播把设备推入过热。"""
+    mode = preview_cores()          # 顺带刷新 _thermal_value
+    if mode >= 3 and (_thermal_value is None or _thermal_value < 70):
+        return 4
+    return mode
+
+
 def preview_event(key):
     fp, quality = key
     return os.path.dirname(fp), quality
@@ -20812,8 +20824,15 @@ class SentryPreviewJobs:
 
 
 def run_variant(cmd, wanted, jobs=None, key=None, preferred=None, hd_preview=False, startup_boost=False,
-                err_path=None):
-    count = preview_cores()
+                err_path=None, cores=None):
+    def active_cores():
+        """cores=None 时完全跟随温控档位；指定时只在正常温控档(3)下放开，
+        温度升高自动回落到 2/1/0 核。"""
+        thermal = preview_cores()
+        if cores is None:
+            return thermal
+        return thermal if thermal < 3 else cores
+    count = active_cores()
     if wanted is not None and (not count or not wanted()):
         return False
     available = sorted(os.sched_getaffinity(0))
@@ -20870,7 +20889,7 @@ def run_variant(cmd, wanted, jobs=None, key=None, preferred=None, hd_preview=Fal
             try:
                 return proc.wait(timeout=.45) == 0
             except subprocess.TimeoutExpired:
-                count = preview_cores()
+                count = active_cores()
                 if wanted is not None and (not count or not wanted()):
                     # A thermal hold must stop CPU use without erasing the partial Sentry preview.
                     if jobs is not None:
@@ -21148,6 +21167,8 @@ def _encode_preview_parts(fp, quality, prefix, index, duration, transport, ahead
     seconds = PREVIEW_PART_SECONDS
     end = max(1, math.ceil((duration - .08) / seconds))
     fast_hd = quality == '720p'
+    # 正常温度用 4 核追 4 倍速；温控降档时跟着收缩，线程数与实际可用核心一致。
+    enc_cores = min(PART_THREADS, part_encode_cores()) or 1
     # 真正要显示的那一片只编 1 片(保证 5 秒内起播)；起播缓冲阶段的预读一次编 3 秒，
     # 正常预读一次 6 秒，下一段起播缓存一次 4 秒，后台补缓存一次 8~10 秒，
     # 把 ffmpeg 启动开销摊薄，避免以前每 2 秒起一次 ffmpeg 导致播放周期性卡顿。
@@ -21176,12 +21197,12 @@ def _encode_preview_parts(fp, quality, prefix, index, duration, transport, ahead
     progress_key = progress_key[:-4] if progress_key.endswith(".mp4") else progress_key
     cmd = ["sh", "-c", 'echo 300 > /proc/self/oom_score_adj 2>/dev/null; exec "$0" "$@"',
            FFMPEG_BIN, "-nostdin", "-loglevel", "error", "-progress", progress_path, "-nostats",
-           "-ss", str(index * seconds), "-threads", str(TR_THREADS), "-i", fp,
+           "-ss", str(index * seconds), "-threads", str(enc_cores), "-i", fp,
            "-frames:v", str(max(1, math.ceil(length * 24 - .0001))), "-map", "0:v:0", "-an", "-filter_threads", "1",
            "-vf", "setpts=PTS-STARTPTS,fps=24:start_time=0," + scale + ",tpad=stop_mode=clone:stop_duration=0.1",
            *require_encoder_args("ultrafast"),
            "-pix_fmt", "yuv420p",
-           "-profile:v", "baseline", "-level", level, "-threads:v", str(TR_THREADS),
+           "-profile:v", "baseline", "-level", level, "-threads:v", str(enc_cores),
            "-b:v", "%dk" % bitrate, "-maxrate", "%dk" % (bitrate * 2), "-bufsize", "%dk" % (bitrate * 2),
            "-g", str(24 * seconds), "-sc_threshold", "0", "-force_key_frames", "expr:gte(t,n_forced*%d)" % seconds,
            "-f", "segment", "-segment_time_delta", "0.020833", "-segment_start_number", str(index)]
@@ -21226,7 +21247,7 @@ def _encode_preview_parts(fp, quality, prefix, index, duration, transport, ahead
         next_middle = middle_cores[(middle_index + 1) % len(middle_cores)]
         err_path = prefix + "%d-%d.err" % (os.getpid(), threading.get_ident())
         complete = run_variant(cmd + ["-y", tmp], connected, preferred=(middle, 0, 1, next_middle), hd_preview=fast_hd,
-                               startup_boost=fast_hd and startup_boost, err_path=err_path)
+                               startup_boost=fast_hd and startup_boost, err_path=err_path, cores=enc_cores)
         try:
             with open(err_path, "rb") as stream:
                 lines = stream.read()[-600:].decode("utf-8", "ignore").strip().splitlines()
