@@ -540,7 +540,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.020"
+APP_VERSION = "2026.11.28.021"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -2396,7 +2396,9 @@ body.watching { overscroll-behavior:none; }
   .telhud.wrap .th-line { gap:6px; }
   .player .video-toolbar .cambar { order:1; flex:1 0 100%; }
   .telhud { order:2; }
-  .telmore { order:3; }
+  .telmore { order:3; flex:1 0 100%; width:100%; min-width:0; max-width:100%; margin:0; }
+  #th-rows,#th-rows .th-row { width:100%; min-width:0; }
+  #th-rows .th-row > span { min-width:0; overflow-wrap:anywhere; }
   .system-status .netspeed { font-size:inherit; padding:0; }
 }
 @media (prefers-reduced-motion: reduce) { .telhud.show { animation:none } .th-sig.on { animation:none } }
@@ -3113,10 +3115,10 @@ body.watching { overflow:hidden; }
   #watch-items button.selected { background:var(--panel2); border-left-color:var(--play-accent); }
 }
 :root:fullscreen .player .watch-list,.player.expanded .watch-list { display:none; }
-:root:fullscreen .player :is(.tpanel,.infocard) { display:none; }
+:root:fullscreen .player .tpanel { display:none; }
 :root:fullscreen .player .vwrap,.player.expanded .vwrap { max-width:none; }
 .player .startmask { width:100%; border:0; }
-.player.expanded .tpanel,.player.expanded .infocard { display:none; }
+.player.expanded .tpanel { display:none; }
 @media (max-width:700px) {
   .timeline-row { display:block; }
   .playback-help { font-size:10px; }
@@ -3545,6 +3547,13 @@ body.settings-open { overflow:hidden; }
   .player .pback { font-size:12px; }
   .list-toggle { width:40px; min-width:40px; height:40px; }
   .player .pscroll { padding:12px 10px max(16px,env(safe-area-inset-bottom)); gap:10px; }
+  /* 手机播放页锁定横向宽度，只让内容区纵向滚动，底部片段详情始终可滑到。 */
+  .player .watch-main,.player .pscroll { width:100%; min-width:0; max-width:100%; overflow-x:hidden; }
+  .player .pscroll { overflow-y:auto; overscroll-behavior-x:none; }
+  .player .pscroll > * { min-width:0; max-width:100%; }
+  .player .infocard { flex:0 0 auto; width:100%; max-width:100%; }
+  .player .ic-fold { min-height:44px; padding:8px 12px; touch-action:manipulation; }
+  .player .ic-rows,.player .clipbar { min-width:0; max-width:100%; overflow-wrap:anywhere; }
   .player .cambar button { flex:1; min-height:44px; padding:4px; font-size:12px; }
   .playtools { gap:6px; grid-template-columns:minmax(0,1fr); }
   .playtools .shuttle { grid-column:1; grid-row:1; gap:3px; justify-self:center; }
@@ -6618,7 +6627,11 @@ function requestRoad(lat, lon) {
 function syncTelWidth() {
   const hud = document.getElementById('telhud'), more = document.getElementById('telmore');
   if (!hud || !more || !more.classList.contains('open')) return;
-  const w = hud.getBoundingClientRect().width;
+  const available = more.parentElement ? more.parentElement.clientWidth : 0;
+  const hudWidth = hud.getBoundingClientRect().width;
+  // 手机端详情始终占满内容区；桌面端仍跟随上方显示条，同时不超过容器。
+  const w = matchMedia('(max-width:640px)').matches
+    ? available : Math.min(hudWidth, available || hudWidth);
   if (w > 0 && more.dataset.w !== String(w)) {
     more.style.width = w + 'px';
     more.dataset.w = String(w);
