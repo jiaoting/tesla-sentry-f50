@@ -538,7 +538,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.011"
+APP_VERSION = "2026.11.28.012"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -1695,7 +1695,7 @@ AUTO_UPD = {"last_check": 0, "last_result": "", "last_apply": 0, "next_try": 0}
 # ---- 标题栏标识 (logo + 名称): 默认内置这张图, 设置里可换成自己的 ----
 BRAND_DIR = os.path.join(os.path.dirname(SETTINGS_FILE) or "/opt/tesla-sentry", "brand")
 BRAND_NAME_MAX = 24
-BRAND_NAME_DEFAULT = "哨兵一剪梅"
+BRAND_NAME_DEFAULT = "特斯拉云哨兵"
 # 168x168 JPEG, 已缩到够 34px 显示 3 倍屏用; 内嵌避免设备上没有图片文件
 BRAND_LOGO_B64 = (
     "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAQDAwQDAwQEBAQFBQQFBwsHBwYGBw4KCggLEA4RERAOEA8SFBoWEhMYEw8QFh8XGBsb"
@@ -4010,7 +4010,7 @@ body.settings-open { overflow:hidden; }
       <div class="brandmeta"><b id="brand-prevname"></b><span>当前效果</span></div>
     </div>
     <div class="brandrow">
-      <input class="ninput" id="brand-name" maxlength="24" placeholder="哨兵一剪梅" autocomplete="off" autocapitalize="none" onkeydown="if(event.key==='Enter')saveBrandName()">
+      <input class="ninput" id="brand-name" maxlength="24" placeholder="特斯拉云哨兵" autocomplete="off" autocapitalize="none" onkeydown="if(event.key==='Enter')saveBrandName()">
       <button class="primary" onclick="saveBrandName()">保存</button>
     </div>
     <div class="brandactions">
@@ -4258,7 +4258,7 @@ body.settings-open { overflow:hidden; }
       <textarea class="ninput" id="nt-bark-body" rows="4" style="min-height:80px;resize:vertical;line-height:1.6" placeholder="正文模板，留空默认：时间/位置/原因" oninput="barkPreview()"></textarea>
       <div class="hint">变量：{类型} {时间} {位置} {原因} {分类} {摄像头}；修改模板时下方预览实时更新。</div>
       <div class="bk-preview" id="bk-preview">
-        <div class="bk-head"><span class="bk-app">哨兵一剪梅</span><span class="bk-now">现在</span></div>
+        <div class="bk-head"><span class="bk-app">特斯拉云哨兵</span><span class="bk-now">现在</span></div>
         <div class="bk-main">
           <div class="bk-txt"><b id="bk-pv-title">🚨 哨兵提醒 · 哨兵警觉 · 前视</b><p id="bk-pv-body">时间：11月27日 21:30:05
 位置：广东省深圳市南山区科技园
