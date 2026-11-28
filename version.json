@@ -1,5 +1,5 @@
 {
-  "version": "2026.11.28.026",
+  "version": "2026.11.28.027",
   "date": "2026-11-28",
   "files": [
     "storage_allocation.py",
@@ -9,12 +9,14 @@
   "ffmpeg_package": {
     "version": "N-129333-g7fdb4c2341",
     "architecture": "aarch64",
-    "path": "vendor/ffmpeg/ffmpeg-N-129333-g7fdb4c2341-linuxarm64-gpl.tar.xz",
+    "path": "vendor/ffmpeg/ffmpeg-N-129333-g7fdb4c2341-aarch64-gpl.tar.xz",
     "size": 54602376,
     "sha256": "75497c33ebc67e4f9e5837efae624f59d9fca3d9b486b10072b6db54715ecf12",
     "source_url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz"
   },
   "notes": [
+    "FFmpeg 仓库包文件名改用 aarch64 架构标识，安装器、网页修复与 OTA 清单路径同步更新",
+    "—— 以下为 2026.11.28.026 更新 ——",
     "仓库新增 BtbN N-129333-g7fdb4c2341 ARM64 FFmpeg 原始压缩包，安装器可直接校验并安装随包文件，无需联网下载",
     "网页一键修复接入同一仓库包，本地包有效时离线完成；静态包先暂存并验证完整能力，再原子替换 ffmpeg/ffprobe",
     "已由仓库管理的 FFmpeg 按包 SHA-256 随 OTA 按需更新，相同包不重复下载；失败保留旧版，系统自带完整构建不被无谓替换",
