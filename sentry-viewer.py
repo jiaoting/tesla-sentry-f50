@@ -465,6 +465,7 @@ AUDIO_Q = os.path.join(ARCHIVE, "boombox-queue")
 AUDIO_DONE = os.path.join(ARCHIVE, "boombox-done")
 AUDIO_LIB = os.path.join(ARCHIVE, "audio")   # 锁车声音/音效素材库
 WRAPS_LIB = os.path.join(ARCHIVE, "wraps")   # 车辆涂装素材库: 车机 Wraps/ 的本地副本, 重新挂载后自动补回
+CHIME_LIB = os.path.join(AUDIO_LIB, "LockChime.wav")   # 锁车声音备份: 车机清掉根目录 LockChime.wav 后自动补回
 FILES_DIR = os.path.join(ARCHIVE, "files")
 # 转码缓存放在归档区 transcode_cache 子目录 (随数据卡), 与归档视频一一对应; 归档视频被删时自动清理对应缓存
 TRANSCODE_DIR = os.environ.get("TSF_TRANSCODE_DIR") or os.path.join(ARCHIVE, "transcode_cache")
@@ -539,7 +540,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.015"
+APP_VERSION = "2026.11.28.016"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -10510,6 +10511,7 @@ async function refreshWrapsRemote() {
   const list = document.getElementById('wraps-remote-list');
   if (!list) return;
   wrapsRemoteSel.clear(); wrapsRemoteUpdate();
+  if (usbDetachBusy) { wrapsRemoteMessage('正在恢复车机导出，请稍候…'); return; }
   if (!usbPanelAttached) { wrapsRemoteMessage('连接车机 U 盘后显示 Wraps/ 内容'); return; }
   wrapsRemoteMessage('正在读取车机 Wraps/ 内容…');
   try {
@@ -10911,6 +10913,7 @@ let usbPanelJob = { state: 'idle', message: '', elapsed: 0 };
 let USB_PANEL_POLL = null;
 let usbPanelPolling = false;
 let usbPanelAction = false;
+let usbDetachBusy = false;   // 正在恢复车机导出: 暂停读取 U 盘, 避免卸载被占用
 let usbStatusSeq = 0;
 function usbPanelHtml(detail) {
   const job = usbPanelJob || {}, state = job.state || 'idle';
@@ -10987,6 +10990,7 @@ function usbPollStart() {
     if (!j) return;
     const job = j.job || {}, state = job.state || 'idle';
     if (state === 'running' || state === 'detaching') return;
+    usbDetachBusy = false;
     usbPollStop();
     if (state === 'done') {
       curDir = '';
@@ -11002,6 +11006,7 @@ function usbPollStart() {
 async function usbAttach() {
   if (usbPanelAction) return;
   usbPanelAction = true;
+  usbDetachBusy = false;
   usbPanelJob = { state: 'running', message: '正在提交连接请求…', elapsed: 0 };
   renderUsbPanels();
   try {
@@ -11040,6 +11045,7 @@ async function usbAttachCancel() {
 async function usbDetach() {
   if (usbPanelAction) return;
   usbPanelAction = true;
+  usbDetachBusy = true;
   usbPanelJob = { state: 'detaching', message: '正在提交恢复请求…', elapsed: 0 };
   usbSetAttached(false);
   const nav = document.getElementById('dir-nav');
@@ -11047,6 +11053,7 @@ async function usbDetach() {
   try {
     const j = await usbFetchJson('/api/usb/detach', { method: 'POST' });
     if (!j.ok) {
+      usbDetachBusy = false;
       toast(j.msg || '恢复失败');
       await refreshUsbStatus();
       if (usbPanelJob.state === 'running' || usbPanelJob.state === 'detaching') usbPollStart();
@@ -12086,6 +12093,7 @@ USB_LOCK_FILE = os.environ.get("TSF_USB_LOCK", "/tmp/tsf-usb.lock")
 usb_lock = threading.Lock()
 usb_attached = False
 usb_timer = None
+USB_DETACHING = False   # 正在恢复车机导出: 期间拒绝新的 U 盘读取, 避免卸载被占用
 _usb_flock_fd = None
 
 
@@ -12347,10 +12355,11 @@ def usb_attach(cancel=None):
                 raise RuntimeError("挂载失败: " + msg)
             if _usb_cancelled(cancel):
                 raise _USBAttachCancelled()
-            try:   # 车机重挂后可能清掉 Wraps/, 用归档区素材库把缺失的涂装补回来
+            try:   # 车机重挂后可能清掉 Wraps/ 和锁车声音, 用归档区素材库补回缺失文件
                 wraps_sync_library()
+                chime_restore_to_usb()
             except Exception as ex:
-                print("wraps library sync skipped: %s" % ex, flush=True)
+                print("usb library sync skipped: %s" % ex, flush=True)
             usb_attached = True
             if usb_timer:
                 usb_timer.cancel()
@@ -12381,14 +12390,20 @@ def usb_attach(cancel=None):
 
 
 def usb_detach():
-    """卸载镜像并恢复车机导出; 即使卸载失败也恢复 UDC 并释放网页占用状态。"""
-    global usb_attached, usb_timer
+    """卸载镜像并恢复车机导出。
+
+    只有确认 MNT 已卸载干净才把镜像交回车机: 车机和我们同时读写同一个 exFAT 卷时,
+    双方的目录/位图缓存会互相覆盖, 刚写入的 LockChime.wav 和 Wraps/ 会被车机用旧
+    缓存写回去 (表现为「恢复导出后文件被删」)。卸载失败时保持断开, 稍后自动重试。
+    """
+    global usb_attached, usb_timer, USB_DETACHING
     usb_attach_cancel()   # 内部写入后的恢复同样不能让等待任务重新连接
     if storage_busy():
         return False, "正在设置容量或格式化 U 盘"
     with usb_lock:
         if storage_busy():
             return False, "正在设置容量或格式化 U 盘"
+        USB_DETACHING = True
         if usb_timer:
             usb_timer.cancel()
             usb_timer = None
@@ -12399,7 +12414,7 @@ def usb_detach():
                     _usb_run(["sync"], timeout=10)
                 except RuntimeError as ex:
                     warning = str(ex)
-                for _ in range(3):
+                for _ in range(5):
                     try:
                         r = _usb_run(["umount", MNT])
                         if r.returncode == 0:
@@ -12408,12 +12423,12 @@ def usb_detach():
                         pass
                     time.sleep(1)
                 if os.path.ismount(MNT):
-                    try:
-                        _usb_run(["umount", "-l", MNT], timeout=5)
-                    except RuntimeError:
-                        pass
-                if os.path.ismount(MNT):
-                    return False, "卸载失败, 有进程占用 " + MNT
+                    # 仍有请求占用挂载点: 保持断开, 绝不把镜像交回车机
+                    if usb_timer is None:
+                        usb_timer = threading.Timer(USB_AUTO_DETACH, usb_detach_safe)
+                        usb_timer.daemon = True
+                        usb_timer.start()
+                    return False, "车机U盘仍有读取占用，已保持断开并会自动重试；请关闭预览/文件列表后再点「恢复车机导出」"
             try:
                 _usb_run([LOSETUP, "-d", LOOPDEV], timeout=5)
             except RuntimeError as ex:
@@ -12422,10 +12437,15 @@ def usb_detach():
         except (OSError, RuntimeError, subprocess.SubprocessError) as ex:
             return False, str(ex)[:180]
         finally:
-            _gadget_rebind(True)
-            usb_attached = False
-            _ARCH_SYNC_PAUSE.update(on=False, why="")
-            _release_usb_flock()
+            still_mounted = os.path.ismount(MNT)
+            if still_mounted:
+                usb_attached = True      # 仍由网页管理, 用户可稍后重试
+            else:
+                usb_attached = False
+                _gadget_rebind(True)
+                _ARCH_SYNC_PAUSE.update(on=False, why="")
+                _release_usb_flock()
+            USB_DETACHING = False
 
 
 _USB_JOB_LOCK = threading.Lock()
@@ -13169,6 +13189,21 @@ def wraps_sync_library():
     return backed, restored
 
 
+def chime_restore_to_usb():
+    """车机清掉根目录锁车声音后, 用归档区备份自动补回 (已有则不覆盖)。"""
+    try:
+        if not os.path.isfile(CHIME_LIB):
+            return False
+        dst = usb_real("LockChime.wav")
+        if not dst or os.path.exists(dst):
+            return False
+        shutil.copyfile(CHIME_LIB, dst)
+        subprocess.run(["sync"], capture_output=True)
+        return True
+    except OSError:
+        return False
+
+
 def usb_clear_target(target):
     """只清理锁车声音或 Wraps 中的 PNG, 不开放任意路径删除。"""
     if target not in ("audio", "wraps"):
@@ -13183,6 +13218,11 @@ def usb_clear_target(target):
             if os.path.isfile(fp):
                 os.remove(fp)
                 removed = 1
+            try:   # 同时清掉备份, 否则下次连接车机时会自动补回
+                if os.path.isfile(CHIME_LIB):
+                    os.remove(CHIME_LIB)
+            except OSError:
+                pass
         else:
             directory = usb_real("Wraps")
             if os.path.isdir(directory):
@@ -14445,6 +14485,11 @@ def audio_set_lockchime(name):
             shutil.copyfile(source, staged)
             os.replace(staged, os.path.join(MNT, "LockChime.wav"))   # 覆盖同名文件
             subprocess.run(["sync"], capture_output=True)
+            try:   # 备份到归档区, 车机重新挂载清掉根目录后可自动补回
+                os.makedirs(AUDIO_LIB, exist_ok=True)
+                shutil.copyfile(source, CHIME_LIB)
+            except OSError:
+                pass
         except OSError as ex:
             try:
                 os.remove(staged)
@@ -23313,6 +23358,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/usb/job":
             self._json({"ok": True, "job": usb_job(), "attached": usb_attached})
         elif path == "/api/usb/browse":
+            if USB_DETACHING:
+                self._json({"ok": False, "attached": usb_attached, "msg": "正在恢复车机导出，请稍候"})
+                return
             q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             fp = usb_real(q.get("dir", [""])[0])
             if not usb_attached or not os.path.ismount(MNT):
@@ -23333,6 +23381,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "attached": True, "dir": "" if rel == "." else rel,
                         "dirs": dirs, "files": files})
         elif path == "/usbdl":
+            if USB_DETACHING:
+                self._send(409, b"busy")
+                return
             q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             fp = usb_real(q.get("path", [""])[0])
             if not fp or not os.path.isfile(fp):
