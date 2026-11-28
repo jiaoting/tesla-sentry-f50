@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.035"
+APP_VERSION = "2026.11.29.001"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -15084,12 +15084,12 @@ def thumb_file(fp, ss_t=1.0):
 # 源 1280x960 (4:3); 用固定目标码率: 公网 5G 上行只有 ~120KB/s, CRF 模式码率不可控会传不完
 # 8 核 T760 实测: -threads 8 + superfast 比 2 线程快一倍 (20s->10s/分钟片段), 内存峰值充足 (720p 后仍余 ~980MB)
 RES_SCALE = {"360p": (480, 360, 520), "480p": (640, 480, 900), "720p": (960, 720, 1500)}  # 宽,高,kbps
-# F50 转码保持单任务、默认 3 线程，与正常温控档的 3 核一致，避免六路起播时瞬时压满更多核心。
+# F50 转码保持单任务、默认 4 线程，与正常温控档一致，避免持续满载把设备推入过热。
 # 内存或散热紧张时可通过 TSF_TR_THREADS 进一步降低。
-TR_THREADS = max(1, min(8, int(os.environ.get("TSF_TR_THREADS", "3"))))
-# 播放分片转码只用几百毫秒到几秒，正常温度下允许比整段转码多 1 核（默认 4 核），
-# 尽快把缓冲追到 4 倍速；温控降档、过热时仍按原档位收缩。可用 TSF_PART_THREADS 调整。
-PART_THREADS = max(1, min(8, int(os.environ.get("TSF_PART_THREADS", "4"))))
+TR_THREADS = max(1, min(8, int(os.environ.get("TSF_TR_THREADS", "4"))))
+# 播放分片转码只用几百毫秒到几秒，正常温度下用 6 核（比整段转码多 2 核），
+# 尽快把缓冲追到 6 倍速；温控降档、过热时仍按原档位收缩到 3/2/1 核。可用 TSF_PART_THREADS 调整。
+PART_THREADS = max(1, min(8, int(os.environ.get("TSF_PART_THREADS", "6"))))
 # 编码参数版本号: 参与缓存 key。改码率/帧率等参数时 +1, 旧缓存自动失效重新生成。
 RES_ENC_VER = "3"   # v3: 提高码率与峰值上限 (320/500/900 -> 520/900/1500), 减少动态画面方块
 RES_DIR = TRANSCODE_DIR  # 转码缓存放在归档区内(数据卡), 删归档视频时对应缓存会自动清理
@@ -20774,11 +20774,11 @@ def preview_memory_available():
 
 
 def part_encode_cores():
-    """播放分片转码可用核心数：正常温度给 4 核，尽量跑到 4 倍速；
+    """播放分片转码可用核心数：正常温度给 PART_THREADS 核（默认 6），尽量跑到 6 倍速；
     温度偏高（>=70℃）或温控已降档时沿用原有 3/2/1 核，避免为了起播把设备推入过热。"""
     mode = preview_cores()          # 顺带刷新 _thermal_value
     if mode >= 3 and (_thermal_value is None or _thermal_value < 70):
-        return 4
+        return PART_THREADS
     return mode
 
 
@@ -20838,10 +20838,10 @@ def run_variant(cmd, wanted, jobs=None, key=None, preferred=None, hd_preview=Fal
     available = sorted(os.sched_getaffinity(0))
     target = [n for n in (preferred or (4, 5, 6)) if n in available] or available
     def cpu_mask(core_count):
-        if hd_preview and len(target) == 4 and _thermal_value is not None:
+        if hd_preview and len(target) >= 4 and _thermal_value is not None:
             if core_count in (2, 3) and _thermal_value < 70:
-                # Prefer the other middle core within the ordinary thermal budget.
-                return [target[0], target[3], *target[1:core_count - 1]]
+                # 降档到 2/3 核时优先取首尾两个中间核（4/5/6 中轮换的两个），避开小核。
+                return [target[0], target[-1], *target[1:core_count - 1]]
         return target[:core_count or 2]
 
     mask = cpu_mask(count)
@@ -20967,7 +20967,8 @@ def get_variant(fp, qv, slot=True, wanted=None, jobs=None):
                          daemon=True).start()
         ok = False
         try:
-            ok = run_variant(cmd, wanted, jobs, (fp, qv), err_path=error_file)
+            ok = run_variant(cmd, wanted, jobs, (fp, qv), preferred=(4, 5, 6, 7),
+                             err_path=error_file, cores=TR_THREADS)
         except Exception as exc:
             transcode_note(fp, qv, state="failed", error="%s: %s" % (type(exc).__name__, exc))
         finally:
@@ -21167,7 +21168,7 @@ def _encode_preview_parts(fp, quality, prefix, index, duration, transport, ahead
     seconds = PREVIEW_PART_SECONDS
     end = max(1, math.ceil((duration - .08) / seconds))
     fast_hd = quality == '720p'
-    # 正常温度用 4 核追 4 倍速；温控降档时跟着收缩，线程数与实际可用核心一致。
+    # 正常温度用 PART_THREADS 核（默认 6）追 6 倍速；温控降档时跟着收缩，线程数与实际可用核心一致。
     enc_cores = min(PART_THREADS, part_encode_cores()) or 1
     # 真正要显示的那一片只编 1 片(保证 5 秒内起播)；起播缓冲阶段的预读一次编 3 秒，
     # 正常预读一次 6 秒，下一段起播缓存一次 4 秒，后台补缓存一次 8~10 秒，
@@ -21237,8 +21238,9 @@ def _encode_preview_parts(fp, quality, prefix, index, duration, transport, ahead
     tracker = threading.Thread(target=track_progress, daemon=True)
     tracker.start()
     try:
-        # Spread successive cuts across the middle cores. Use the same thermal
-        # core count as the existing worker, including its full cooling stop.
+        # 主核在 4/5/6 之间轮换，让这三个核轮流休息以均衡散热；
+        # preferred 取 0/1/2/3 加轮换中的两个，共 6 核（始终留出第 7 核与 4/5/6 中的一个给系统/网络），
+        # 这样正常温度下 enc_cores=6 能真正 pin 到 6 个核，温控降档时再按档位收缩。
         cam = cam_of(os.path.basename(fp))
         camera_index = CAM_ORDER6.index(cam) if cam in CAM_ORDER6 else 0
         middle_cores = (4, 5, 6)
@@ -21246,7 +21248,7 @@ def _encode_preview_parts(fp, quality, prefix, index, duration, transport, ahead
         middle = middle_cores[middle_index]
         next_middle = middle_cores[(middle_index + 1) % len(middle_cores)]
         err_path = prefix + "%d-%d.err" % (os.getpid(), threading.get_ident())
-        complete = run_variant(cmd + ["-y", tmp], connected, preferred=(middle, 0, 1, next_middle), hd_preview=fast_hd,
+        complete = run_variant(cmd + ["-y", tmp], connected, preferred=(middle, 0, 1, 2, 3, next_middle), hd_preview=fast_hd,
                                startup_boost=fast_hd and startup_boost, err_path=err_path, cores=enc_cores)
         try:
             with open(err_path, "rb") as stream:
