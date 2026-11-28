@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.032"
+APP_VERSION = "2026.11.28.033"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -3290,6 +3290,9 @@ body.watching { overflow:hidden; }
 #track-bands .event-dot { height:9px; top:-2px; width:9px; border-radius:50%; transform:translateX(-50%); box-shadow:0 0 0 1.5px var(--bg), 0 0 6px rgba(255,69,58,.55); }
 #track-bands .event-dot.sentry { background:#ff453a; }
 #track-bands .event-dot.saved { background:#ffd60a; }
+/* 进度条下方的转码/缓冲进度：像常见视频网站那样显示已缓冲范围 */
+#track-buffer { position:absolute; left:8px; right:8px; top:23px; height:3px; border-radius:2px; overflow:hidden; pointer-events:none; }
+#track-buffer i { position:absolute; inset-block:0; border-radius:2px; background:var(--text); opacity:.32; }
 #seek { position:absolute; left:0; top:0; width:100%; height:34px; margin:0; cursor:pointer; appearance:none; -webkit-appearance:none; background:transparent; }
 #seek::-webkit-slider-runnable-track { background:transparent; height:6px; }
 #seek::-moz-range-track { background:transparent; height:6px; }
@@ -4102,7 +4105,7 @@ body.settings-open { overflow:hidden; }
     </div>
     <section class="transport" aria-label="回放控制">
       <div class="clockline"><span id="track-start"></span><output id="ptime">--:--:--</output><span id="track-end"></span></div>
-      <div class="timeline-row"><div class="timeline"><div id="track-bands" aria-hidden="true"></div><input type="range" id="seek" min="0" max="1" step="0.05" value="0" aria-label="录像时间"><output id="seek-hover" hidden></output><button id="trigger-marker" hidden>触发时刻</button></div></div>
+      <div class="timeline-row"><div class="timeline"><div id="track-bands" aria-hidden="true"></div><div id="track-buffer" aria-hidden="true"></div><input type="range" id="seek" min="0" max="1" step="0.05" value="0" aria-label="录像时间"><output id="seek-hover" hidden></output><button id="trigger-marker" hidden>触发时刻</button></div></div>
       <div class="playtools">
         <div class="playback-help"><div class="ph-line"><span class="ph-kb-t">画面</span><span class="ph-key">单击播放/暂停</span><span class="ph-key">右半屏长按<span class="ph-hold-rate">3</span>×快进</span><span class="ph-key">左半屏长按<span class="ph-hold-rate">3</span>×快退</span></div><div class="ph-line"><span class="ph-kb-t">键盘</span><span class="ph-key">空格播放/暂停</span><span class="ph-key">长按<span class="ph-hold-rate">3</span>×快进</span><span class="ph-key">←→1s</span><span class="ph-key">↑↓10s</span></div></div>
         <div class="shuttle"><button id="skip-back" aria-label="回退十秒">−10s</button><button id="skip-back-one" aria-label="回退一秒">−1s</button><button id="ppbtn" aria-label="播放"><svg class="ic" aria-hidden="true" focusable="false"><use id="ppicon" href="#i-play"/></svg></button><button id="skip-next-one" aria-label="前进一秒">+1s</button><button id="skip-next" aria-label="前进十秒">+10s</button></div>
@@ -6138,10 +6141,15 @@ function setCam(cam) {
 }
 
 const hlsPreview = document.createElement('video').canPlayType('application/vnd.apple.mpegurl');
-const PREVIEW_START_SECONDS = 10;
-const PREVIEW_HD_START_SECONDS = 10;
-const PREVIEW_HD_RECOVERY_SECONDS = 10;
-const PREVIEW_HD_READ_AHEAD_SECONDS = 25;
+/* 起播前最多缓冲 4 秒（配合 5 秒等待上限），预读 30 秒，多路同步只要 1.2 秒即可继续播，
+   避免以前每路都要求 10 秒缓冲、任一路慢一点就把全部画面按停造成周期性卡顿。 */
+const PREVIEW_START_SECONDS = 4;
+const PREVIEW_HD_START_SECONDS = 4;
+const PREVIEW_HD_RECOVERY_SECONDS = 4;
+const PREVIEW_READ_AHEAD_SECONDS = 30;
+const PREVIEW_HD_READ_AHEAD_SECONDS = 30;
+const PREVIEW_START_WAIT_MS = 5000;
+const PREVIEW_HOLD_SECONDS = 1.2;
 function previewMime(quality) {
   return quality === '720p' ? 'video/mp4; codecs="avc1.42C01F"' : 'video/mp4; codecs="avc1.42C01E"';
 }
@@ -6153,10 +6161,10 @@ function usesPreviewParts(file) {
     (hlsPreview || supportsPreviewMse(curQ));
 }
 
-function hasPreviewLead(video, at = video.currentTime) {
+function hasPreviewLead(video, at = video.currentTime, leadOverride) {
   const end = Math.min(videoDuration(video) || Infinity, currentClip().length);
   // At the end of a clip, buffer only as far as playback can actually reach.
-  const lead = Number(video.dataset.previewLead) || PREVIEW_START_SECONDS;
+  const lead = leadOverride || Number(video.dataset.previewLead) || PREVIEW_START_SECONDS;
   const through = Math.max(at, Math.min(at + lead * baseRate, end - 0.08));
   return hasBufferedTime(video, at, through);
 }
@@ -6206,7 +6214,7 @@ function previewStream(video, file, seconds, quality, signal, failed) {
   video.dataset.mse = '1';
   video.dataset.startBuffer = '1';
   video.dataset.previewLead = String(quality === '720p' ? PREVIEW_HD_START_SECONDS : PREVIEW_START_SECONDS);
-  const readAhead = quality === '720p' ? PREVIEW_HD_READ_AHEAD_SECONDS : 20;
+  const readAhead = quality === '720p' ? PREVIEW_HD_READ_AHEAD_SECONDS : PREVIEW_READ_AHEAD_SECONDS;
   const source = new MediaSource(), url = URL.createObjectURL(source);
   let buffer, timer, fetching = null, stopped = false;
   let fetchingIndex = -1, fetchingPriority = 2, fetchingSeekRevision = 0;
@@ -6514,7 +6522,7 @@ function syncOverview(videos) {
     }
   }
   if (playing.some(v => v.error || v.dataset.loadFailed || v.seeking || v.dataset.positioning ||
-      v.readyState < 2 || (v.dataset.mse ? !hasPreviewLead(v) :
+      v.readyState < 2 || (v.dataset.mse ? !hasPreviewLead(v, v.currentTime, PREVIEW_HOLD_SECONDS) :
         v.readyState < 3 && v.duration - v.currentTime > .08))) return false;
   overviewPosition = null;
   resetPlaybackClock();
@@ -6526,11 +6534,18 @@ function tryPlay(v, synchronized = false) {
   if (!wantedPlay || (camSel === 'all' && synchronized !== true) || v.ended || v.error || v.dataset.loadFailed ||
       v.dataset.outside || !v.getAttribute('src')) return;
   if (v.dataset.startBuffer) {
-    if (!previewReadyToPlay(v)) {
+    // 起播最多等 5 秒：缓冲够 4 秒立即播；转码慢时到 5 秒就带着现有缓冲先播，
+    // 后续分片继续在后台转码，避免一直停在「正在转码」。
+    if (!v.dataset.startAt) v.dataset.startAt = String(performance.now());
+    const waited = performance.now() - Number(v.dataset.startAt);
+    const playable = previewReadyToPlay(v) ||
+      (waited >= PREVIEW_START_WAIT_MS && v.readyState >= 2 && bufferAhead(v) >= .35);
+    if (!playable) {
       v.parentElement.querySelector('.cload').hidden = false;
       return;
     }
     delete v.dataset.startBuffer;
+    delete v.dataset.startAt;
     if (curQ === '720p') v.dataset.previewLead = String(PREVIEW_HD_RECOVERY_SECONDS);
   }
   const play = v.play();
@@ -7789,6 +7804,47 @@ function doExportZip() {
   closeExport();
   downloadExport('/api/export/' + encodeURIComponent(libraryCat) + '/' + encodeURIComponent(cur.name) + '?' + query);
 }
+/* 当前片段在进度条上的已缓冲范围（多路时取各路交集），映射到整条时间线。
+   分片转码每成功一片就会 append 进 MSE，video.buffered 因此能实时反映转码缓冲进度。 */
+function bufferedWallRanges() {
+  const clip = currentClip();
+  if (!clip) return [];
+  const videos = activeVideos().filter(v => v.readyState >= 1);
+  if (!videos.length) return [];
+  let ranges = null;
+  for (const v of videos) {
+    const limit = Math.min(clip.length, v.duration || clip.length), own = [];
+    for (let i = 0; i < v.buffered.length; ++i) {
+      const from = Math.max(0, v.buffered.start(i));
+      const to = Math.min(limit, v.buffered.end(i));
+      if (to - from > .05) own.push([from, to]);
+    }
+    if (!ranges) { ranges = own; continue; }
+    const merged = [];
+    for (const [as, ae] of ranges) for (const [bs, be] of own) {
+      const from = Math.max(as, bs), to = Math.min(ae, be);
+      if (to - from > .05) merged.push([from, to]);
+    }
+    ranges = merged;
+  }
+  return (ranges || []).map(([from, to]) => [clip.start + from, clip.start + to]);
+}
+
+function drawTrackBuffer(start, end) {
+  const layer = byId('track-buffer');
+  if (!layer) return;
+  const span = Math.max(.001, end - start);
+  layer.replaceChildren();
+  for (const [from, to] of bufferedWallRanges()) {
+    const left = Math.max(from, start), right = Math.min(to, end);
+    if (right - left <= .04) continue;
+    const seg = document.createElement('i');
+    seg.style.left = (left - start) / span * 100 + '%';
+    seg.style.width = (right - left) / span * 100 + '%';
+    layer.append(seg);
+  }
+}
+
 function updateControls() {
   const playing = wantedPlay && !atEnd;
   byId('ppicon').setAttribute('href', playing ? '#i-pause' : '#i-play');
@@ -7797,7 +7853,7 @@ function updateControls() {
   if (spd && Number(spd.value) !== baseRate) spd.value = String(baseRate);
   if (!curClips.length) return;
   const wall = currentClip().start + clipOffset;
-  const {start} = timelineBounds();
+  const {start, end} = timelineBounds();
   if (!editingSeek) {
     byId('seek').value = wall - start;
     byId('track-bands').style.setProperty('--played', byId('seek').value / byId('seek').max * 100 + '%');
@@ -7805,6 +7861,7 @@ function updateControls() {
     byId('ptime').textContent = label;
     byId('seek').setAttribute('aria-valuetext', label);
   }
+  drawTrackBuffer(start, end);
   if (liveMode) {
     byId('lv-status').textContent = followLatest ? (atEnd ? '等待新录像' : '跟随最新') : '回看中';
     byId('lv-back').disabled = followLatest && curClipIx === curClips.length - 1;
@@ -8161,7 +8218,7 @@ function closePlayback() {
   playerRecording = null;
   updateRecordingActions();
   seekPointerStart = null; byId('seek').removeAttribute('title');
-  byId('cambar').replaceChildren(); byId('track-bands').replaceChildren();
+  byId('cambar').replaceChildren(); byId('track-bands').replaceChildren(); byId('track-buffer').replaceChildren();
   byId('ic-rows').replaceChildren(); byId('ic-rows').classList.remove('open');
   const foldBtn = byId('ic-fold');
   foldBtn.setAttribute('aria-expanded', 'false');
@@ -21019,10 +21076,18 @@ def _encode_preview_parts(fp, quality, prefix, index, duration, transport, ahead
     seconds = PREVIEW_PART_SECONDS
     end = max(1, math.ceil((duration - .08) / seconds))
     fast_hd = quality == '720p'
-    # 首帧只编 1 片；六路交互预读每次 2 片轮转，避免单路长时间占住转码槽。
-    # 后台缓存才用大批量摊销 ffmpeg 启动开销。
-    batch_size = 1 if startup_boost else ((8 if fast_hd else 6) if bulk else 2)
-    count = min(batch_size if ahead and not warm else 1, end - index)
+    # 真正要显示的那一片只编 1 片(保证 5 秒内起播)；起播缓冲阶段的预读一次编 3 秒，
+    # 正常预读一次 6 秒，下一段起播缓存一次 4 秒，后台补缓存一次 8~10 秒，
+    # 把 ffmpeg 启动开销摊薄，避免以前每 2 秒起一次 ffmpeg 导致播放周期性卡顿。
+    if startup_boost:
+        batch_size = 3
+    elif warm:
+        batch_size = 4
+    elif bulk:
+        batch_size = 8 if fast_hd else 10
+    else:
+        batch_size = 6
+    count = min(batch_size if (ahead or warm) else 1, end - index)
     for step in range(1, count):
         if os.path.isfile("%s%d.%s" % (prefix, index + step, transport)):
             count = step
