@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.033"
+APP_VERSION = "2026.11.28.034"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -7868,14 +7868,14 @@ function updateControls() {
   }
 }
 
-function seekWall(target, direction = 1) {
+function seekWall(target, direction = 1, quiet = false) {
   if (!curClips.length) return;
   if (liveMode) followLatest = false;
   let {ix, offset} = locateWall(target);
   if (ix > 0 && curClips[ix].start > target) {
     const previous = curClips[ix - 1];
     const gap = timelineGapSummary(curClips[ix]);
-    if (gap) toast('跳过 ' + gap.label);
+    if (gap && !quiet) toast('跳过 ' + gap.label);
     if (direction < 0) {
       ix -= 1;
       offset = Math.max(0, previous.length - 0.1);
@@ -8262,7 +8262,49 @@ byId('skip-back-one').onclick = () => { seekRelative(-1); flashPlayer('−1 秒'
 byId('skip-next-one').onclick = () => { seekRelative(1); flashPlayer('+1 秒'); };
 byId('skip-next').onclick = () => { seekRelative(10); flashPlayer('+10 秒'); };
 byId('trigger-marker').onclick = () => { if (triggerTime !== null) seekWall(triggerTime); };
-byId('seek').onpointerdown = event => { seekPointerStart = event.clientX; editingSeek = true; dropPrefetch(); };
+/* 进度条拖动：边拖边跳转。移动端以前只在 change(松手)时才真正 seek，
+   若 tick 抢先把滑杆值写回旧位置，就会出现「拖到位又弹回去、要再拖一次」。
+   现在按最后位置节流即时 seek，并在松手时以手指位置为准提交。 */
+let seekScrubTarget = null, seekScrubDone = null, seekScrubTimer = null, seekScrubAt = 0;
+let seekGesture = false, seekGestureDone = false, seekPointerX = null;
+function scrubSeekNow() {
+  seekScrubTimer = null;
+  if (seekScrubTarget === null || !curClips.length) return;
+  seekScrubAt = performance.now();
+  seekScrubDone = seekScrubTarget;
+  seekWall(seekScrubTarget, 1, true);
+}
+function queueScrubSeek(target) {
+  seekScrubTarget = target;
+  const wait = 150 - (performance.now() - seekScrubAt);
+  if (wait <= 0) scrubSeekNow();
+  else if (!seekScrubTimer) seekScrubTimer = setTimeout(scrubSeekNow, wait);
+}
+function commitScrubSeek() {
+  if (seekScrubTimer) { clearTimeout(seekScrubTimer); seekScrubTimer = null; }
+  seekGestureDone = true;
+  const target = seekScrubTarget;
+  seekScrubTarget = null;
+  if (target !== null && curClips.length && (seekScrubDone === null || Math.abs(target - seekScrubDone) > .02)) seekWall(target);
+  seekScrubDone = null;
+}
+function seekTargetAt(clientX) {
+  const el = byId('seek');
+  if (!el || !curClips.length) return null;
+  const rect = el.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left - 8) / Math.max(1, rect.width - 16)));
+  return timelineBounds().start + ratio * Number(el.max);
+}
+byId('seek').onpointerdown = event => {
+  seekPointerStart = event.clientX;
+  seekPointerX = event.clientX;
+  seekGesture = true;
+  seekGestureDone = false;
+  seekScrubTarget = null;
+  seekScrubDone = null;
+  editingSeek = true;
+  dropPrefetch();
+};
 byId('seek').onpointermove = function(event) {
   const gap = timelineGapAt(event.clientX);
   this.title = gap?.title || '';
@@ -8273,6 +8315,16 @@ byId('seek').onpointermove = function(event) {
   hover.textContent = wallLabel(recordingTime(timelineBounds().start + ratio * Number(this.max)));
   hover.style.left = (8 + ratio * Math.max(0, rect.width - 16)) + 'px';
   hover.hidden = false;
+  // 手指/鼠标按下拖动时直接按指针位置跳转，不依赖 range 的 input 事件，
+  // 保证移动端滑到哪就跳到哪。
+  if (seekGesture && seekPointerStart !== null && !seekGestureDone) {
+    seekPointerX = event.clientX;
+    const target = seekTargetAt(event.clientX);
+    if (target !== null) {
+      byId('track-bands').style.setProperty('--played', (target - timelineBounds().start) / Math.max(.001, Number(this.max)) * 100 + '%');
+      queueScrubSeek(target);
+    }
+  }
 };
 byId('seek').onpointerleave = function() { this.removeAttribute('title'); byId('seek-hover').hidden = true; };
 byId('seek').onpointerup = event => {
@@ -8285,24 +8337,44 @@ byId('seek').onpointerup = event => {
     }
   }
   seekPointerStart = null;
+  if (seekGesture && !seekGestureDone) {
+    const target = seekTargetAt(event.clientX);
+    if (target !== null) seekScrubTarget = target;
+    commitScrubSeek();
+  }
+  seekPointerX = null;
 };
 function finishSeek() {
   editingSeek = false;
   // Flush a refresh deferred during the gesture, including manual-only live mode.
   setTimeout(() => { if (liveMode && liveDirty && !editingSeek) liveTick(); }, 0);
 }
-window.addEventListener('pointerup', finishSeek);
-window.addEventListener('pointercancel', () => { finishSeek(); seekPointerStart = null; });
+window.addEventListener('pointerup', () => { commitScrubSeek(); seekPointerX = null; finishSeek(); });
+window.addEventListener('pointercancel', () => { commitScrubSeek(); seekPointerX = null; finishSeek(); seekPointerStart = null; });
 byId('seek').oninput = function() {
-  if (!curClips.length) return;
+  if (!curClips.length || (seekGesture && seekGestureDone)) return;
   editingSeek = true;
-  byId('track-bands').style.setProperty('--played', this.value / this.max * 100 + '%');
-  const time = wallLabel(recordingTime(timelineBounds().start + Number(this.value)));
+  const target = seekGesture && seekPointerX !== null
+    ? seekTargetAt(seekPointerX)
+    : timelineBounds().start + Number(this.value);
+  if (target === null) return;
+  byId('track-bands').style.setProperty('--played', (target - timelineBounds().start) / Math.max(.001, Number(this.max)) * 100 + '%');
+  const time = wallLabel(recordingTime(target));
   byId('ptime').textContent = time; this.setAttribute('aria-valuetext', time);
+  queueScrubSeek(target);
 };
 byId('seek').onchange = function() {
+  const wasGesture = seekGesture;
+  seekGesture = false;
+  if (wasGesture) {
+    // 触摸/鼠标拖动：松手时已按手指最后位置跳转过，忽略可能被 tick 覆盖的旧值。
+    commitScrubSeek();
+  } else if (curClips.length) {
+    // 键盘方向键等没有 pointerdown 的操作，按最终值跳转。
+    if (seekScrubTarget === null) seekScrubTarget = timelineBounds().start + Number(this.value);
+    commitScrubSeek();
+  }
   editingSeek = false;
-  if (curClips.length) seekWall(timelineBounds().start + Number(this.value));
   finishSeek();
 };
 byId('seek').onblur = finishSeek;
