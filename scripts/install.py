@@ -27,11 +27,11 @@ SCRIPTS = ('mkexfat.py', 'tesla-gadget.sh', 'tesla-usb-start.sh', 'tesla-img.sh'
            'usb-selfheal.sh', 'tsf-storage.sh', 'tsf-maintenance.sh')
 MARKER = 'installation.json'
 FFMPEG_DOWNLOAD_URLS = (
-    'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz',
     'https://gh-proxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/'
     'ffmpeg-master-latest-linuxarm64-gpl.tar.xz',
     'https://gh-proxy.org/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/'
     'ffmpeg-master-latest-linuxarm64-gpl.tar.xz',
+    'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz',
 )
 
 
@@ -82,7 +82,7 @@ def run(command, **kwargs):
 
 
 def download_ffmpeg_archive(archive, user_agent):
-    """官方源优先；连接失败或连续 60 秒没有新数据时切换加速源。"""
+    """加速源优先；连接失败或连续 60 秒没有新数据时切换下一地址。"""
     errors = []
     for index, url in enumerate(FFMPEG_DOWNLOAD_URLS):
         try:
@@ -101,7 +101,7 @@ def download_ffmpeg_archive(archive, user_agent):
         except Exception as exc:
             errors.append('%s: %s' % (url.split('/')[2], str(exc)[:120]))
             if index + 1 < len(FFMPEG_DOWNLOAD_URLS):
-                print('下载失败或连续 60 秒无进度，改用加速地址重试', flush=True)
+                print('下载失败或连续 60 秒无进度，切换下一下载地址重试', flush=True)
     raise InstallError('FFmpeg 下载失败：%s' % '；'.join(errors))
 
 
@@ -667,7 +667,7 @@ class Installer:
     def install_static_ffmpeg(self):
         """固件的 ffmpeg 是精简构建时, 下载官方 arm64(aarch64) 静态包
         (含 HEVC 解码 + libx264), 直接装到 /usr/bin/ffmpeg、/usr/bin/ffprobe;
-        该目录已有同名文件会被原子替换。官方源无进度时切换固定加速地址，解压按文件名白名单提取。"""
+        该目录已有同名文件会被原子替换。优先使用加速地址，解压按文件名白名单提取。"""
         if platform.machine() not in ('aarch64', 'arm64'):
             raise InstallError('静态 FFmpeg 仅提供 aarch64 构建，当前架构为 %s' % platform.machine())
         target = self.path('/usr/bin')
@@ -678,7 +678,7 @@ class Installer:
             if ok:
                 return {'ffmpeg': str(binary), 'ffprobe': str(probe)}
         print('固件自带的 FFmpeg 不完整（缺 HEVC 解码或 H.264 编码），'
-              '正在下载 aarch64 静态构建并安装到 /usr/bin（60 秒无进度自动切换加速地址）', flush=True)
+              '正在通过加速地址下载 aarch64 静态构建并安装到 /usr/bin（60 秒无进度自动切换备用地址）', flush=True)
         target.mkdir(parents=True, exist_ok=True)
         archive = Path(tempfile.mkdtemp(prefix='tsf-ff-', dir='/tmp')) / 'ffmpeg.tar.xz'
         try:
