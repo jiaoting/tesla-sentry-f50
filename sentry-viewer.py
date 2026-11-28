@@ -538,7 +538,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.013"
+APP_VERSION = "2026.11.28.014"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -2653,6 +2653,11 @@ select.ninput { cursor:pointer; }
 .stage-item { flex-wrap:wrap; }
 .stage-section-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:14px 0 8px; }
 .stage-section-head b { font-size:14px; }
+.stage-head-left { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0; }
+.stage-head-left .mini { margin:0; }
+.panel .mini.stage-clear-danger { background:var(--danger); border-color:var(--danger); color:#fff; font-weight:600; }
+.panel .mini.stage-clear-danger:hover { background:#c34d4d; border-color:#c34d4d; }
+.panel .mini.stage-clear-danger:disabled { opacity:.5; }
 .stage-remote-list { margin-bottom:18px; }
 .stage-item .stage-name { min-width:130px; }
 .stage-preview-audio { width:220px; max-width:100%; height:34px; flex:0 1 220px; }
@@ -4046,8 +4051,12 @@ body.settings-open { overflow:hidden; }
   <div id="tab-wraps" style="display:none">
     <div id="wraps-status" style="margin-bottom:10px" aria-live="polite"></div>
     <div class="stage-section-head">
-      <b>车机 U 盘 · Wraps/</b>
-      <button class="mini danger" id="wraps-clear-btn" onclick="stageClearRemote('wraps')">清除车机涂装</button>
+      <div class="stage-head-left">
+        <b>车机 U 盘 · Wraps/</b>
+        <button class="mini" id="wraps-remote-rename" onclick="wrapsRemoteRename()" disabled>重命名</button>
+        <button class="mini" id="wraps-remote-del" onclick="wrapsRemoteDelete()" disabled>删除</button>
+      </div>
+      <button class="mini stage-clear-danger" id="wraps-clear-btn" onclick="stageClearRemote('wraps')">清除车机涂装</button>
     </div>
     <div class="hint">连接车机 U 盘后，这里显示车机 Wraps/ 文件夹中的现有内容，点击图片可放大预览。</div>
     <div id="wraps-remote-list" class="stage-remote-list"><div class="hint" style="margin:0">连接车机 U 盘后显示 Wraps/ 内容</div></div>
@@ -10484,14 +10493,22 @@ async function stageClearRemote(kind) {
 }
 function refreshAudio() { stageRender('audio'); }
 let wrapsRemoteRequest = 0;
+let wrapsRemoteSel = new Set();
 function wrapsRemoteMessage(text) {
   const list = document.getElementById('wraps-remote-list');
   if (list) list.innerHTML = '<div class="hint" style="margin:0">' + esc(text) + '</div>';
+}
+function wrapsRemoteUpdate() {
+  const ren = document.getElementById('wraps-remote-rename');
+  const del = document.getElementById('wraps-remote-del');
+  if (ren) ren.disabled = stageOperation || wrapsRemoteSel.size !== 1;
+  if (del) del.disabled = stageOperation || !wrapsRemoteSel.size;
 }
 async function refreshWrapsRemote() {
   const request = ++wrapsRemoteRequest;
   const list = document.getElementById('wraps-remote-list');
   if (!list) return;
+  wrapsRemoteSel.clear(); wrapsRemoteUpdate();
   if (!usbPanelAttached) { wrapsRemoteMessage('连接车机 U 盘后显示 Wraps/ 内容'); return; }
   wrapsRemoteMessage('正在读取车机 Wraps/ 内容…');
   try {
@@ -10519,6 +10536,14 @@ async function refreshWrapsRemote() {
     for (const f of j.files || []) {
       count++;
       const row = document.createElement('div'); row.className = 'item stage-item';
+      const chk = document.createElement('input');
+      chk.type = 'checkbox'; chk.className = 'fm-chk';
+      chk.onchange = () => {
+        if (chk.checked) wrapsRemoteSel.add(f.name); else wrapsRemoteSel.delete(f.name);
+        row.classList.toggle('fm-sel', chk.checked);
+        wrapsRemoteUpdate();
+      };
+      row.appendChild(chk);
       const name = document.createElement('span'); name.className = 'n stage-name';
       name.textContent = f.name; name.title = f.name;
       if (/\.png$/i.test(f.name)) {
@@ -10541,11 +10566,58 @@ async function refreshWrapsRemote() {
     if (request === wrapsRemoteRequest) wrapsRemoteMessage('车机 Wraps/ 读取失败：' + e.message);
   }
 }
+async function wrapsRemoteRename() {
+  if (stageOperation) return;
+  const names = Array.from(wrapsRemoteSel);
+  if (names.length !== 1) { toast('请先勾选一个涂装文件'); return; }
+  const oldName = names[0];
+  const input = prompt('将 ' + oldName + ' 重命名为：', oldName);
+  if (input === null) return;
+  let newName = input.trim();
+  if (!newName || newName === oldName) return;
+  if (!/\.png$/i.test(newName)) newName += '.png';
+  if (/[\\/:*?"<>|]/.test(newName)) { toast('❌ 名称不能包含 \\ / : * ? " < > |'); return; }
+  stageOperation = true; wrapsRemoteUpdate();
+  try {
+    await stageRequest('/api/fm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ area: 'usb', op: 'rename', items: ['Wraps/' + oldName], name: newName })
+    });
+    toast('✅ 已重命名为 ' + newName);
+    wrapsRemoteSel.clear();
+    await refreshWraps();
+  } catch (e) {
+    toast('❌ 重命名失败 — ' + e.message);
+  } finally {
+    stageOperation = false; wrapsRemoteUpdate();
+  }
+}
+async function wrapsRemoteDelete() {
+  if (stageOperation) return;
+  const names = Array.from(wrapsRemoteSel);
+  if (!names.length) return;
+  if (!confirm('将从车机 Wraps/ 永久删除以下 ' + names.length + ' 个涂装文件：\n' + names.join('\n') + '\n\n确定继续吗？')) return;
+  stageOperation = true; wrapsRemoteUpdate();
+  try {
+    const result = await stageRequest('/api/fm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ area: 'usb', op: 'delete', items: names.map(n => 'Wraps/' + n) })
+    });
+    toast('✅ ' + (result.msg || '已删除'));
+    wrapsRemoteSel.clear();
+    await refreshWraps();
+  } catch (e) {
+    toast('❌ 删除失败 — ' + e.message);
+  } finally {
+    stageOperation = false; wrapsRemoteUpdate();
+  }
+}
 async function refreshWraps() {
   stageRender('wraps');
   const status = await refreshUsbStatus();
   if (!status || !status.attached) {
     wrapsRemoteRequest++;
+    wrapsRemoteSel.clear(); wrapsRemoteUpdate();
     wrapsRemoteMessage('点击上方「连接车机U盘」后显示 Wraps/ 内容');
     return;
   }
