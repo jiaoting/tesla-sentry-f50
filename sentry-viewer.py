@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.031"
+APP_VERSION = "2026.11.28.032"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -6050,6 +6050,13 @@ async function openPlayer(ev, live = false, camera = '', clipName = '') {
   curQ = localStorage.getItem(live ? 'tsfliveq' : 'tsfq3') || (live && localStorage.getItem('tsfq3')) || defaultQualityFor();
   if (!Q_LIST.some(([q]) => q === curQ)) curQ = defaultQualityFor();
   renderQSel();
+  if (firstOpen) {
+    // 从已经向下滚动的列表进入播放器时, sticky 顶栏可能不在视口顶部;
+    // 先把页面滚回顶部 (列表此时即将隐藏, 返回时再滚回 listScroll)。
+    if (!document.fullscreenElement) byId('player').classList.remove('expanded', 'force-landscape');
+    window.scrollTo(0, 0);
+  }
+  if (window.syncHeaderHeight) window.syncHeaderHeight();
   byId('player').classList.add('open');
   document.body.classList.add('watching');
   byId('livep').hidden = !live;
@@ -8179,6 +8186,7 @@ function closePlayer() {
   byId('player').classList.remove('open', 'expanded', 'library-open', 'force-landscape');
   byId('livep').hidden = true;
   document.body.classList.remove('watching');
+  if (window.syncHeaderHeight) window.syncHeaderHeight();
   render(currentCat); window.scrollTo(0, listScroll);
 }
 
@@ -8261,6 +8269,8 @@ function syncForcedLandscape() {
   if (!fullscreen || landscapeLocked) player.classList.remove('force-landscape');
   else if (matchMedia('(pointer:coarse)').matches && matchMedia('(orientation:portrait)').matches) player.classList.add('force-landscape');
   else player.classList.remove('force-landscape');
+  // 退出全屏后顶栏重新出现, 立即重算高度, 不等下一次 resize。
+  if (window.syncHeaderHeight) window.syncHeaderHeight();
   layoutPlayer();
 }
 async function togglePlayerFullscreen() {
@@ -8278,6 +8288,7 @@ async function togglePlayerFullscreen() {
   if (player.classList.contains('expanded')) {
     unlock();
     player.classList.remove('expanded', 'force-landscape');
+    if (window.syncHeaderHeight) window.syncHeaderHeight();
     layoutPlayer();
     return;
   }
@@ -11569,14 +11580,23 @@ refreshBrand();
       root.style.removeProperty('--app-header');
       return;
     }
+    // 全屏 / 播放器 expanded 时顶栏是 display:none, 这里会测到 0;
+    // 绝不能把 0 写进 --app-header, 否则播放器会从屏幕顶部铺满、把顶栏和页签盖掉。
+    if (!hdr.offsetHeight) return;
     hdr.classList.remove('hdr-stack');
     // 未分行布局超过两行基准高度(标题行 + 页签行)说明状态区被挤到了新的一行
     if (hdr.offsetHeight > 110) hdr.classList.add('hdr-stack');
-    root.style.setProperty('--app-header', hdr.offsetHeight + 'px');
+    const height = hdr.offsetHeight;
+    if (height > 0) root.style.setProperty('--app-header', height + 'px');
   }
   function queue() { if (!raf) raf = requestAnimationFrame(apply); }
+  // 播放器开关、退出全屏、从后台回来时也主动重算, 不再只依赖 resize。
+  window.syncHeaderHeight = apply;
   window.addEventListener('resize', queue, { passive: true });
   window.addEventListener('orientationchange', queue);
+  document.addEventListener('fullscreenchange', () => setTimeout(apply, 0));
+  window.addEventListener('pageshow', () => setTimeout(apply, 0));
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', queue, { passive: true });
   queue();
   setTimeout(apply, 300);
 })();
