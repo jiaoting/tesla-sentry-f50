@@ -1,5 +1,5 @@
 {
-  "version": "2026.11.28.028",
+  "version": "2026.11.28.029",
   "date": "2026-11-28",
   "files": [
     "storage_allocation.py",
@@ -15,6 +15,9 @@
     "source_url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz"
   },
   "notes": [
+    "修复全新安装报“安装未完成：[Errno 2] No such file or directory: '/usr/bin/ffmpeg'”：--ffmpeg 指定的路径不存在/不可执行、或系统 ffmpeg 缺依赖库无法执行时，不再直接中断安装，改为重新查找并自动安装",
+    "安装器执行外部命令失败时给出可读提示（哪个命令、什么原因），降级安装不再因 ffmpeg 缺失而中止",
+    "—— 以下为 2026.11.28.028 更新 ——",
     "安装时不再自动挂载或格式化数据盘：已挂载的 ext4 卡直接使用，未挂载时由开机服务或网页「外置卡管理」挂载，仅显式 --init-card 才在安装阶段初始化",
     "播放设置的事件缓存估算按当前转码码率更新（720p 约 1.5、480p 约 0.9、360p 约 0.5 Mbps），并按触发点前 1 分钟到后 1 分钟、每路 3 段计算",
     "—— 以下为 2026.11.28.027 更新 ——",

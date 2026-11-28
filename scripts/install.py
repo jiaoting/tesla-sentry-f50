@@ -77,7 +77,12 @@ def arguments(argv=None):
 
 def run(command, **kwargs):
     timeout = kwargs.pop('timeout', 60)
-    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, **kwargs)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, **kwargs)
+    except OSError as exc:
+        # 文件不存在、无执行权限或缺少依赖库(execve 返回 ENOENT)时给出可读信息,
+        # 不再把裸 errno 抛到最外层变成“安装未完成：[Errno 2] ...”
+        raise InstallError('无法执行 %s：%s' % (command[0], exc.strerror or exc)) from exc
     if result.returncode:
         raise InstallError('%s 失败：%s' % (command[0], result.stderr.strip()[-500:]))
     return result.stdout
@@ -199,6 +204,7 @@ class Installer:
         self.repaired = False
         self.upgrade = False
         self.ffmpeg_degraded = False
+        self.warned = set()
         self.runtime = self.source / 'runtime' if (self.source / 'runtime').is_dir() else None
 
     def runtime_selftest(self):
@@ -489,10 +495,16 @@ class Installer:
             其他参数 (PORT/IDLE/GADGET/FFMPEG 等) 旧 conf 有就继承
         """
         # F50 推荐按 OpenWrt 版本用 apk/opkg 安装 ffmpeg；未显式指定时把配置固定到 /usr/bin。
-        ffmpeg = self.args.ffmpeg or ('/usr/bin/ffmpeg' if self.path('/usr/bin/ffmpeg').is_file()
-                                      else self.device['ffmpeg'])
-        ffprobe = self.args.ffprobe or ('/usr/bin/ffprobe' if self.path('/usr/bin/ffprobe').is_file()
-                                        else self.device['ffprobe'])
+        # 只写真正可执行的路径, 避免把损坏的 /usr/bin/ffmpeg 写进配置。
+        def pick(name, standard):
+            explicit = getattr(self.args, name)
+            if explicit and self.executable(explicit):
+                return explicit
+            if self.executable(standard):
+                return standard
+            return self.device[name]
+        ffmpeg = pick('ffmpeg', '/usr/bin/ffmpeg')
+        ffprobe = pick('ffprobe', '/usr/bin/ffprobe')
         settings = dict(TSF_DIR=APP, TSF_CARD_UUID=self.device['uuid'],
                         TSF_CARD_MNT=self.args.data_mount,
                         TSF_VIDEO_ROOT=self.data_home,
@@ -617,18 +629,42 @@ class Installer:
                 '*/10 * * * * ' + prefix + 'tsf-maintenance.sh audio >/dev/null 2>&1\n' +
                 end + '\n')
 
+    def executable(self, path):
+        """绝对路径对应的文件存在且有执行权限(不真正运行)。"""
+        if not path:
+            return False
+        real = self.path(path)
+        return real.is_file() and os.access(real, os.X_OK)
+
+    def binary_runs(self, path):
+        """真正跑一次 -version: 文件缺失、无权限、缺依赖库或 ABI 不匹配都算不可用。"""
+        if not path:
+            return False
+        try:
+            return subprocess.run([path, '-version'], stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=30).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
     def resolve_binary(self, name):
         """按 --ffmpeg/--ffprobe -> /usr/bin (apk 安装) -> PATH -> /opt/mu300 的顺序找可执行文件。
         F50 是 aarch64/OpenWrt，按版本用 `apk add`/`opkg install` 安装；/usr/bin 的包与系统 ABI 一致，
-        不要优先使用来源不明的 aarch64 静态包。"""
+        不要优先使用来源不明的 aarch64 静态包。显式指定的路径也要确认文件存在且可执行，
+        否则会把不存在的 /usr/bin/ffmpeg 当成可用路径，后面执行时报 FileNotFoundError。"""
         binary = getattr(self.args, name)
+        if binary and not self.executable(binary):
+            if binary not in self.warned:
+                self.warned.add(binary)
+                print('提示：--%s 指定的 %s 不存在或不可执行，改为自动查找/安装'
+                      % (name, binary), flush=True)
+            binary = None
         if not binary:
             standard = '/usr/bin/' + name
             if self.path(standard).is_file() and os.access(self.path(standard), os.X_OK):
                 binary = standard
         if not binary:
             binary = self.tool(name)
-        if not binary and self.path('/opt/mu300/ffmpeg/' + name).is_file():
+        if not binary and self.executable('/opt/mu300/ffmpeg/' + name):
             binary = '/opt/mu300/ffmpeg/' + name
         if not binary or not re.fullmatch(r'/[A-Za-z0-9_./-]+', binary):
             return None
@@ -895,6 +931,11 @@ class Installer:
             resolved = paths()
             ok, caps = check(resolved)
         if not ok:
+            # 降级前复核: 文件存在但 exec 不出来(缺库/ABI 不符)的路径要清掉,
+            # 否则 preflight/网页会继续拿它执行, 报裸 FileNotFoundError。
+            for name in ('ffmpeg', 'ffprobe'):
+                if resolved.get(name) and not self.binary_runs(resolved[name]):
+                    resolved[name] = ''
             labels = {'hevc': 'HEVC 解码', 'mp4': 'MP4 封装', 'scale': 'scale', 'pad': 'pad',
                       'fps': 'fps', 'xstack': 'xstack', 'setsar': 'setsar', 'subtitles': 'subtitles'}
             missing = [label for key, label in labels.items() if not caps.get(key)]
@@ -1079,6 +1120,13 @@ class Installer:
                            gadget_config=configs[0], udc=udc, losetup=losetup, loop=loop)
         for name in ('ffmpeg', 'ffprobe'):
             binary = (resolved or {}).get(name) or self.resolve_binary(name)
+            if binary and not self.binary_runs(binary):
+                if not self.ffmpeg_degraded:
+                    raise InstallError('%s 无法执行（%s）：文件缺失、无执行权限或缺少依赖库；'
+                                       '请执行 `%s`，或用 --%s 指定可用的绝对路径'
+                                       % (name, binary, self.pkg_hint(('ffmpeg',)), name))
+                print('警告：%s 不可执行（%s），安装继续' % (name, binary), flush=True)
+                binary = None
             if not binary:
                 if not self.ffmpeg_degraded:
                     raise InstallError('缺少 %s；请执行 `%s`，或用 --%s /usr/bin/%s 指定 '
@@ -1087,7 +1135,6 @@ class Installer:
                 self.device[name] = ''
                 print('警告：%s 暂不可用，安装继续' % name, flush=True)
                 continue
-            run([binary, '-version'])
             self.device[name] = binary
         if not all(self.device.get(name) for name in ('ffmpeg', 'ffprobe')):
             print('警告：FFmpeg/ffprobe 不完整，本次跳过媒体能力自检；安装后可从网页修复', flush=True)
