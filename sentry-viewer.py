@@ -538,7 +538,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.012"
+APP_VERSION = "2026.11.28.013"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -2651,6 +2651,9 @@ select.ninput { cursor:pointer; }
 .item.fm-sel { box-shadow:inset 0 0 0 1px var(--accent); }
 .item .fm-mini { padding:7px 10px; min-height:32px; min-width:32px; }
 .stage-item { flex-wrap:wrap; }
+.stage-section-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:14px 0 8px; }
+.stage-section-head b { font-size:14px; }
+.stage-remote-list { margin-bottom:18px; }
 .stage-item .stage-name { min-width:130px; }
 .stage-preview-audio { width:220px; max-width:100%; height:34px; flex:0 1 220px; }
 .stage-preview-image { width:96px; height:64px; flex:0 0 auto; object-fit:contain; background:#0d1117; border:1px solid var(--line2); border-radius:8px; cursor:zoom-in; }
@@ -4026,7 +4029,6 @@ body.settings-open { overflow:hidden; }
   </div>
   <div id="tab-audio" style="display:none">
     <div class="hint">先选择 wav / mp3 音频（单个 &lt;1MB），直接在浏览器播放预览。点击列表右侧「上传」后自动连接车机 U 盘，写入根目录 <b>LockChime.wav</b>（mp3 自动转换，同名覆盖）。「删除所选」只移除本地列表；「清除车机锁车声音」会连接 U 盘并删除 LockChime.wav。</div>
-    <div id="audio-usb-status" style="margin-bottom:10px" aria-live="polite"></div>
     <div class="tool-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button type="button" class="fm-tool upbtn accent-up" id="audio-upbtn" style="margin:0" onclick="document.getElementById('audio-file').click()"><svg class="ic"><use href="#i-upload"/></svg>选择音频 (wav/mp3, &lt;1MB)</button>
       <input type="file" id="audio-file" accept=".wav,.mp3" hidden multiple>
@@ -4042,13 +4044,19 @@ body.settings-open { overflow:hidden; }
     <div id="audio-list"></div>
   </div>
   <div id="tab-wraps" style="display:none">
-    <div class="hint">先选择 PNG 涂装图片（单个 ≤100MB），直接在浏览器显示缩略图。点击列表右侧「上传」后自动连接车机 U 盘并写入 <b>Wraps/</b>，目录不存在会自动补建，同名文件自动覆盖。「删除所选」只移除本地列表；「清除车机涂装」会连接 U 盘并删除 Wraps/ 内的 PNG 文件。</div>
     <div id="wraps-status" style="margin-bottom:10px" aria-live="polite"></div>
+    <div class="stage-section-head">
+      <b>车机 U 盘 · Wraps/</b>
+      <button class="mini danger" id="wraps-clear-btn" onclick="stageClearRemote('wraps')">清除车机涂装</button>
+    </div>
+    <div class="hint">连接车机 U 盘后，这里显示车机 Wraps/ 文件夹中的现有内容，点击图片可放大预览。</div>
+    <div id="wraps-remote-list" class="stage-remote-list"><div class="hint" style="margin:0">连接车机 U 盘后显示 Wraps/ 内容</div></div>
+    <div class="stage-section-head"><b>本地上传预览</b></div>
+    <div class="hint">选择 PNG 涂装图片（单个 ≤100MB）后先在浏览器显示缩略图。点击右侧「上传」自动连接车机 U 盘并写入 <b>Wraps/</b>，目录不存在会自动补建，同名文件自动覆盖；「删除所选」只移除本地列表。</div>
     <div class="tool-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button type="button" class="fm-tool upbtn accent-up" id="wraps-upbtn" style="margin:0" onclick="document.getElementById('wraps-file').click()"><svg class="ic"><use href="#i-upload"/></svg>选择涂装图片 (PNG, ≤100MB)</button>
       <input type="file" id="wraps-file" accept=".png" hidden multiple>
       <button class="mini danger" id="wraps-del-btn" onclick="stageDeleteSelected('wraps')" disabled>删除所选</button>
-      <button class="mini danger" id="wraps-clear-btn" onclick="stageClearRemote('wraps')">清除车机涂装</button>
       <span class="hint" id="wraps-selcount" style="margin:0">已选 0 项</span>
     </div>
     <div class="hint" id="wraps-write-msg" role="status" aria-live="polite"></div>
@@ -10447,7 +10455,7 @@ async function stageUpload(kind, id) {
   } finally {
     item.uploading = false; stageOperation = false;
     stageRender(kind); stageUpdateAll();
-    refreshUsbStatus();
+    if (kind === 'wraps') refreshWraps(); else refreshUsbStatus();
   }
 }
 async function stageClearRemote(kind) {
@@ -10471,11 +10479,78 @@ async function stageClearRemote(kind) {
   } finally {
     stageOperation = false;
     stageRender(kind); stageUpdateAll();
-    refreshUsbStatus();
+    if (kind === 'wraps') refreshWraps(); else refreshUsbStatus();
   }
 }
-function refreshAudio() { refreshUsbStatus(); stageRender('audio'); }
-function refreshWraps() { refreshUsbStatus(); stageRender('wraps'); }
+function refreshAudio() { stageRender('audio'); }
+let wrapsRemoteRequest = 0;
+function wrapsRemoteMessage(text) {
+  const list = document.getElementById('wraps-remote-list');
+  if (list) list.innerHTML = '<div class="hint" style="margin:0">' + esc(text) + '</div>';
+}
+async function refreshWrapsRemote() {
+  const request = ++wrapsRemoteRequest;
+  const list = document.getElementById('wraps-remote-list');
+  if (!list) return;
+  if (!usbPanelAttached) { wrapsRemoteMessage('连接车机 U 盘后显示 Wraps/ 内容'); return; }
+  wrapsRemoteMessage('正在读取车机 Wraps/ 内容…');
+  try {
+    const response = await fetch('/api/usb/browse?dir=Wraps', { cache: 'no-store' });
+    const j = await response.json();
+    if (request !== wrapsRemoteRequest) return;
+    if (!j.attached) {
+      usbSetAttached(false);
+      wrapsRemoteMessage('车机 U 盘已断开，请重新连接后查看');
+      return;
+    }
+    if (!j.ok) {
+      wrapsRemoteMessage(j.msg === '目录不存在' ? '车机上还没有 Wraps/ 文件夹，上传本地图片时会自动创建' : (j.msg || '车机 Wraps/ 读取失败'));
+      return;
+    }
+    list.innerHTML = '';
+    let count = 0;
+    for (const d of j.dirs || []) {
+      count++;
+      const row = document.createElement('div'); row.className = 'item stage-item';
+      const name = document.createElement('span'); name.className = 'n stage-name';
+      name.textContent = d + '/';
+      row.appendChild(name); list.appendChild(row);
+    }
+    for (const f of j.files || []) {
+      count++;
+      const row = document.createElement('div'); row.className = 'item stage-item';
+      const name = document.createElement('span'); name.className = 'n stage-name';
+      name.textContent = f.name; name.title = f.name;
+      if (/\.png$/i.test(f.name)) {
+        const url = '/usbdl?path=' + encodeURIComponent('Wraps/' + f.name);
+        const preview = () => stagePreview({ url, file: { name: f.name } });
+        const img = document.createElement('img');
+        img.className = 'stage-preview-image'; img.src = url; img.alt = f.name;
+        img.title = '点击放大预览'; img.onclick = preview;
+        name.classList.add('fm-open'); name.onclick = preview;
+        row.appendChild(img);
+      }
+      const meta = document.createElement('span'); meta.className = 'fm-meta';
+      const size = document.createElement('span'); size.className = 'fm-size'; size.textContent = fmtSize(f.size || 0);
+      const mtime = document.createElement('span'); mtime.className = 'fm-time'; mtime.textContent = fmtTime(f.mtime);
+      meta.append(size, mtime);
+      row.append(name, meta); list.appendChild(row);
+    }
+    if (!count) wrapsRemoteMessage('车机 Wraps/ 文件夹为空');
+  } catch (e) {
+    if (request === wrapsRemoteRequest) wrapsRemoteMessage('车机 Wraps/ 读取失败：' + e.message);
+  }
+}
+async function refreshWraps() {
+  stageRender('wraps');
+  const status = await refreshUsbStatus();
+  if (!status || !status.attached) {
+    wrapsRemoteRequest++;
+    wrapsRemoteMessage('点击上方「连接车机U盘」后显示 Wraps/ 内容');
+    return;
+  }
+  await refreshWrapsRemote();
+}
 document.getElementById('audio-file').onchange = function () { stageAdd('audio', this); };
 document.getElementById('wraps-file').onchange = function () { stageAdd('wraps', this); };
 
@@ -10756,7 +10831,6 @@ function switchArea(a) {
 }
 const USB_PANELS = [
   ['usb-status', '网页改动会直接写入车机 U 盘'],
-  ['audio-usb-status', '可直接管理并写入锁车声音'],
   ['wraps-status', '上传的图片会直接写入车机 U 盘 Wraps/ 目录'],
 ];
 let usbPanelAttached = false;
