@@ -464,6 +464,7 @@ ARCHIVE = os.environ.get("TSF_ARCHIVE", "/archive")
 AUDIO_Q = os.path.join(ARCHIVE, "boombox-queue")
 AUDIO_DONE = os.path.join(ARCHIVE, "boombox-done")
 AUDIO_LIB = os.path.join(ARCHIVE, "audio")   # 锁车声音/音效素材库
+WRAPS_LIB = os.path.join(ARCHIVE, "wraps")   # 车辆涂装素材库: 车机 Wraps/ 的本地副本, 重新挂载后自动补回
 FILES_DIR = os.path.join(ARCHIVE, "files")
 # 转码缓存放在归档区 transcode_cache 子目录 (随数据卡), 与归档视频一一对应; 归档视频被删时自动清理对应缓存
 TRANSCODE_DIR = os.environ.get("TSF_TRANSCODE_DIR") or os.path.join(ARCHIVE, "transcode_cache")
@@ -538,7 +539,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.014"
+APP_VERSION = "2026.11.28.015"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -4058,7 +4059,7 @@ body.settings-open { overflow:hidden; }
       </div>
       <button class="mini stage-clear-danger" id="wraps-clear-btn" onclick="stageClearRemote('wraps')">清除车机涂装</button>
     </div>
-    <div class="hint">连接车机 U 盘后，这里显示车机 Wraps/ 文件夹中的现有内容，点击图片可放大预览。</div>
+    <div class="hint">连接车机 U 盘后，这里显示车机 Wraps/ 文件夹中的现有内容，点击图片可放大预览；涂装会同时备份到归档区，车机重新挂载后自动补回缺失文件。</div>
     <div id="wraps-remote-list" class="stage-remote-list"><div class="hint" style="margin:0">连接车机 U 盘后显示 Wraps/ 内容</div></div>
     <div class="stage-section-head"><b>本地上传预览</b></div>
     <div class="hint">选择 PNG 涂装图片（单个 ≤100MB）后先在浏览器显示缩略图。点击右侧「上传」自动连接车机 U 盘并写入 <b>Wraps/</b>，目录不存在会自动补建，同名文件自动覆盖；「删除所选」只移除本地列表。</div>
@@ -10469,7 +10470,7 @@ async function stageUpload(kind, id) {
 }
 async function stageClearRemote(kind) {
   if (stageOperation) return;
-  const target = kind === 'audio' ? 'LockChime.wav' : 'Wraps/ 内的全部 PNG 涂装';
+  const target = kind === 'audio' ? 'LockChime.wav' : 'Wraps/ 内的全部 PNG 涂装（含归档区备份）';
   if (!confirm('将自动连接车机 U 盘并永久删除 ' + target + '。\n本地预览列表会保留，确定继续吗？')) return;
   stageOperation = true;
   stageMessage(kind, '正在自动连接车机 U 盘并清除 ' + target + '…');
@@ -11303,7 +11304,7 @@ def _move_children(src_dir, dst_dir):
 
 def ensure_dirs():
     for d in (VIDEO_ROOT, os.path.join(VIDEO_ROOT, "img"),
-              AUDIO_Q, AUDIO_DONE, AUDIO_LIB, FILES_DIR, ARCHIVE, TRANSCODE_DIR):
+              AUDIO_Q, AUDIO_DONE, AUDIO_LIB, WRAPS_LIB, FILES_DIR, ARCHIVE, TRANSCODE_DIR):
         os.makedirs(d, exist_ok=True)
     for c in CATS:
         os.makedirs(os.path.join(ARCHIVE, c), exist_ok=True)
@@ -12346,6 +12347,10 @@ def usb_attach(cancel=None):
                 raise RuntimeError("挂载失败: " + msg)
             if _usb_cancelled(cancel):
                 raise _USBAttachCancelled()
+            try:   # 车机重挂后可能清掉 Wraps/, 用归档区素材库把缺失的涂装补回来
+                wraps_sync_library()
+            except Exception as ex:
+                print("wraps library sync skipped: %s" % ex, flush=True)
             usb_attached = True
             if usb_timer:
                 usb_timer.cancel()
@@ -13069,6 +13074,101 @@ def usb_attach_for_write():
     return False, msg
 
 
+def wraps_lib_save(name, data=None, src=None):
+    """把涂装存一份到归档区 wraps/ 素材库, 车机清掉 Wraps/ 后可自动补回。"""
+    if not name or not str(name).lower().endswith(".png"):
+        return False
+    try:
+        os.makedirs(WRAPS_LIB, exist_ok=True)
+        dst = os.path.join(WRAPS_LIB, os.path.basename(name))
+        if data is not None:
+            with open(dst, "wb") as f:
+                f.write(data)
+        elif src and os.path.isfile(src):
+            shutil.copyfile(src, dst)
+        else:
+            return False
+        return True
+    except OSError:
+        return False
+
+
+def wraps_lib_remove(name):
+    try:
+        name = os.path.basename(name or "")
+        fp = os.path.join(WRAPS_LIB, name)
+        if name and os.path.isfile(fp):
+            os.remove(fp)
+    except OSError:
+        pass
+
+
+def wraps_lib_sync_fm(op, items, new_name):
+    """文件管理/涂装页对车机 Wraps/ 的删除、重命名同步到本地素材库, 避免被补回。"""
+    for item in items or []:
+        rel = str(item).strip().strip("/")
+        if not rel.startswith("Wraps/"):
+            continue
+        name = os.path.basename(rel)
+        if op == "delete":
+            wraps_lib_remove(name)
+        elif op == "rename" and new_name:
+            try:
+                old_fp = os.path.join(WRAPS_LIB, os.path.basename(name))
+                new_fp = os.path.join(WRAPS_LIB, os.path.basename(str(new_name)))
+                if os.path.isfile(old_fp):
+                    os.makedirs(WRAPS_LIB, exist_ok=True)
+                    os.replace(old_fp, new_fp)
+            except OSError:
+                pass
+
+
+def wraps_sync_library():
+    """对齐车机 Wraps/ 与归档区 wraps/ 素材库, 返回 (备份数, 补回数)。
+
+    车机重新挂载 U 盘后可能清掉不认识的根目录, 素材库保证涂装不会凭空消失:
+    先把车机上现有的 PNG 备份进来, 再把车机上缺失的文件补回去 (已有的不覆盖)。
+    """
+    directory = usb_real("Wraps")
+    if not directory:
+        return 0, 0
+    try:
+        os.makedirs(WRAPS_LIB, exist_ok=True)
+    except OSError:
+        return 0, 0
+    backed = restored = 0
+    if os.path.isdir(directory):
+        for name in os.listdir(directory):
+            if not name.lower().endswith(".png") or not safe_name(name):
+                continue
+            lib = os.path.join(WRAPS_LIB, name)
+            if os.path.isfile(lib):
+                continue
+            try:
+                shutil.copyfile(os.path.join(directory, name), lib)
+                backed += 1
+            except OSError:
+                pass
+    try:
+        names = [n for n in os.listdir(WRAPS_LIB) if n.lower().endswith(".png") and safe_name(n)]
+    except OSError:
+        names = []
+    for name in names:
+        dst = os.path.join(directory, name)
+        if os.path.exists(dst):
+            continue
+        try:
+            if not os.path.isdir(directory):
+                os.makedirs(directory, exist_ok=True)
+            shutil.copyfile(os.path.join(WRAPS_LIB, name), dst)
+            restored += 1
+        except OSError:
+            pass
+    if backed or restored:
+        subprocess.run(["sync"], capture_output=True)
+    return backed, restored
+
+
 def usb_clear_target(target):
     """只清理锁车声音或 Wraps 中的 PNG, 不开放任意路径删除。"""
     if target not in ("audio", "wraps"):
@@ -13090,6 +13190,12 @@ def usb_clear_target(target):
                     if entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(".png"):
                         os.remove(entry.path)
                         removed += 1
+            try:   # 同步清空本地素材库, 否则下次连接会把涂装补回车机
+                for name in os.listdir(WRAPS_LIB):
+                    if name.lower().endswith(".png"):
+                        os.remove(os.path.join(WRAPS_LIB, name))
+            except OSError:
+                pass
         subprocess.run(["sync"], capture_output=True)
     except OSError as ex:
         return {"ok": False, "msg": "清除失败: %s" % ex}
@@ -23575,6 +23681,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as ex:
                 self._json({"ok": False, "msg": "操作失败: %s" % ex}, 500)
                 return
+            if ok and str(body.get("area") or "") == "usb" and str(body.get("op") or "") in ("delete", "rename"):
+                wraps_lib_sync_fm(str(body.get("op") or ""), body.get("items") or [], body.get("name") or "")
             j = {"ok": ok, "msg": msg, "done": done, "failed": failed}
             j.update(extra)
             self._json(j)
@@ -24146,8 +24254,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
             with open(os.path.join(dest, fn), "wb") as f:
                 f.write(data)
-            subprocess.run(["sync"], capture_output=True)
             rel = os.path.relpath(dest, MNT).replace("\\", "/")
+            if rel == "Wraps":   # 涂装同步存一份到归档区素材库, 车机清目录后可自动补回
+                wraps_lib_save(fn, data=data)
+            subprocess.run(["sync"], capture_output=True)
             self._json({"ok": True, "msg": f"已上传到 U盘/{'' if rel == '.' else rel + '/' }{fn} ({len(data)//1024} KB)"})
         elif path == "/api/upload/file":
             fn, data, fields = self._read_upload()
