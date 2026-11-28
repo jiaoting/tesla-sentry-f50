@@ -541,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.030"
+APP_VERSION = "2026.11.28.031"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -4219,9 +4219,9 @@ body.settings-open { overflow:hidden; }
     <div class="storage-columns"><section class="storage-quota"><h3>归档区容量设置</h3>
     <div class="storage-row cap"><div class="cap-label"><label for="storage-archive">归档区总上限</label><span class="cap-note" id="archive-limit-note" hidden></span><span class="cap-note" id="storage-budget" role="status"></span></div><input class="ninput" id="storage-archive" type="number" min="0" step="1" inputmode="numeric"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="归档总上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="archive">?</button></div>
     <div class="storage-nested"><div class="storage-row cap"><label for="storage-drive">其中：驾驶记录上限</label><input class="ninput" id="storage-drive" type="number" min="1" step="1" inputmode="numeric" value="12"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="驾驶记录上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="drive">?</button></div><div class="storage-row cap"><label for="retention-recentmax">其中：实时滚动记录上限</label><input class="ninput" id="retention-recentmax" type="number" min="0" max="4096" step="1" inputmode="numeric" value="12"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="实时滚动记录上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="recentmax">?</button></div>
-    <div class="storage-row cap"><label for="storage-sentry">其中：哨兵上限</label><input class="ninput" id="storage-sentry" type="number" min="0" max="4096" step="1" inputmode="numeric"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="哨兵录像上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="sentrymax">?</button></div>
-    <div class="storage-row cap"><label for="storage-saved">其中：手动保存上限</label><input class="ninput" id="storage-saved" type="number" min="0" max="4096" step="1" inputmode="numeric"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="手动保存上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="savedmax">?</button></div>
-    <div class="storage-row cap"><label for="storage-cache">其中：转码缓存上限</label><input class="ninput" id="storage-cache" type="number" min="1" max="64" step="1" inputmode="numeric"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="转码缓存上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="cachemax">?</button></div></div>
+    <div class="storage-row cap"><label for="storage-sentry">其中：哨兵上限</label><input class="ninput" id="storage-sentry" type="number" min="0" max="4096" step="1" inputmode="numeric" value="0"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="哨兵录像上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="sentrymax">?</button></div>
+    <div class="storage-row cap"><label for="storage-saved">其中：手动保存上限</label><input class="ninput" id="storage-saved" type="number" min="0" max="4096" step="1" inputmode="numeric" value="0"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="手动保存上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="savedmax">?</button></div>
+    <div class="storage-row cap"><label for="storage-cache">其中：转码缓存上限</label><input class="ninput" id="storage-cache" type="number" min="1" max="64" step="1" inputmode="numeric" value="5"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="转码缓存上限说明" aria-expanded="false" aria-controls="storage-tip" data-help="cachemax">?</button></div></div>
     <div class="storage-row cap"><label for="storage-reserve">安全预留（清理目标）</label><input class="ninput" id="storage-reserve" type="number" min="1" step="1" inputmode="numeric"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="安全预留空间说明" aria-expanded="false" aria-controls="storage-tip" data-help="reserve">?</button></div>
     <div class="storage-nested"><div class="storage-row cap"><label for="storage-minimum">暂停同步保护线</label><input class="ninput" id="storage-minimum" type="number" min="1" step="1" inputmode="numeric"><span class="retention-unit">G</span><button class="storage-help" type="button" aria-label="暂停同步保护线说明" aria-expanded="false" aria-controls="storage-tip" data-help="minimum">?</button></div></div>
     <div class="updbtns"><button class="mini primary" id="storage-save" onclick="storageSave()" disabled>保存归档设置</button><button class="mini" onclick="storageLoad()">重新加载</button></div>
@@ -8665,6 +8665,7 @@ const STORAGE_HELP = {
   minimum: '存储卡空闲低于此值时暂停新增同步，等待清理释放空间，建议 4 G。这条保护线不另占容量，不能高于安全预留空间。'
 };
 let storageData = null, storageTimer = null, storageHelpButton = null, storageRequest = 0;
+let STORAGE_JOB_RUNNING = false;   // 车机 U 盘设置/格式化任务是否在本页运行过 (用于完成时自动开启实时同步)
 function storageHelpClose() {
   document.getElementById('storage-tip').hidden = true;
   if (storageHelpButton) storageHelpButton.setAttribute('aria-expanded', 'false');
@@ -8961,7 +8962,14 @@ function storageShowJob(job) {
   if (job.state === 'recovery') text += '（可直接展开「设置车机 U 盘容量」点按钮自动清理后重试）';
   // recovery 提示放在容量设置顶部, 避免被折叠的 U 盘区域挡住
   storageMessage(text, job.state !== 'recovery');
-  if (job.state === 'running') storageTimer = setTimeout(storagePoll, 1500);
+  if (job.state === 'running') {
+    STORAGE_JOB_RUNNING = true;
+    storageTimer = setTimeout(storagePoll, 1500);
+  } else {
+    // 车机 U 盘设置/格式化刚完成: 立即开启实时同步, 按钮与首页状态实时刷新
+    if (STORAGE_JOB_RUNNING && job.state === 'done') enableLiveSyncAfterChange();
+    STORAGE_JOB_RUNNING = false;
+  }
   syncStorageCards();
 }
 async function storagePoll() {
@@ -9007,6 +9015,8 @@ async function storageSave() {
     storageRenderAllocation();
     storageRenderUsage();
     storageMessage('归档设置已保存');
+    // 归档区容量保存成功后立即开启实时同步, 按钮与状态实时变化
+    await enableLiveSyncAfterChange();
   } catch (error) { storageMessage(error.message); }
   finally { storageDisable(false); }
 }
@@ -9842,6 +9852,21 @@ async function archiveSyncToggle() {
     try { await refreshLive(); } catch (e2) {}
   }
 }
+/* 车机 U 盘设置完成 / 归档容量保存后立即开启实时同步: 状态与按钮同步刷新 */
+async function enableLiveSyncAfterChange() {
+  try {
+    const live = await (await fetch('/api/live', { cache: 'no-store' })).json();
+    paintLiveToggle(live.enabled !== false, !!live.running, live.ready);
+    // 已经开启或外置卡/镜像未就绪时不重复切换
+    if (live.enabled !== false || !live.ready) return;
+    const j = await (await fetch('/api/live/toggle', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-TSF-Storage': '1' },
+      body: JSON.stringify({ on: true }) })).json();
+    if (!j.ok) return;
+    try { await refreshLive(); } catch (e) { paintLiveToggle(true); }
+    archiveSyncIdlePoll();
+  } catch (e) {}
+}
 /* 停止一次性「立即同步到归档区」任务 (实时同步开关由 archiveSyncToggle 控制服务) */
 async function archiveSyncStop() {
   const btn = document.getElementById('arch-sync-stop');
@@ -9995,7 +10020,13 @@ function ntChannelUI() {
   // 访问地址只对飞书(查看按钮)和 Bark(截图/查看) 有意义, 微信只发文字
   const urlIn = document.getElementById('nt-url'), urlHint = document.getElementById('nt-url-hint');
   if (urlIn) urlIn.style.display = ch === 'wechat' ? 'none' : '';
-  if (urlHint) urlHint.style.display = ch === 'wechat' ? 'none' : '';
+  if (urlHint) {
+    urlHint.style.display = ch === 'wechat' ? 'none' : '';
+    // 说明随推送方式切换, 飞书下不再出现 Bark 字样
+    urlHint.textContent = ch === 'bark'
+      ? 'Bark 触发截图与卡片「查看」按钮都用这个地址；留空时自动使用你最近访问的地址（手机连车机 WiFi 即可直接显示截图）。'
+      : '飞书卡片的「查看」按钮与封面链接都用这个地址；留空时自动使用你最近访问的地址（手机连车机 WiFi 即可直接打开）。';
+  }
   if (ch === 'bark') barkPreview();
 }
 const BARK_SOUND_LABELS = {'':'系统默认', alarm:'闹钟', bell:'铃声', chime:'提示音', glass:'玻璃',
@@ -17098,6 +17129,14 @@ def external_card_format(body):
                     ensure_dirs()
                 except OSError:
                     pass
+            # 初始格式化成功后自动开启开机自动挂载: 写入 init.d 脚本并建立开机链接,
+            # 前端读取 boot 状态后会自动勾选「开机自动挂载」
+            try:
+                external_card_config({"automount": True,
+                                      "delay": card_boot_config()["delay"],
+                                      "device": dev, "mountpoint": target})
+            except (OSError, ValueError) as ex:
+                print("card automount: %s" % ex, flush=True)
             if mounted:
                 _card_job_set(state="done", message="格式化完成（ext4），已挂载到默认位置 %s。请设置车机 U 盘容量" % target)
             else:
