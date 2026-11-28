@@ -31,8 +31,10 @@ FFMPEG_DOWNLOAD_URLS = (
     'ffmpeg-master-latest-linuxarm64-gpl.tar.xz',
     'https://gh-proxy.org/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/'
     'ffmpeg-master-latest-linuxarm64-gpl.tar.xz',
-    'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz',
+    'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/'
+    'ffmpeg-master-latest-linuxarm64-gpl.tar.xz',
 )
+FFMPEG_STATE = '/etc/tesla-sentry-ffmpeg.json'
 
 
 def collapse_dup_sentry(value):
@@ -81,26 +83,76 @@ def run(command, **kwargs):
     return result.stdout
 
 
-def download_ffmpeg_archive(archive, user_agent):
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def ffmpeg_package(source):
+    """读取并约束仓库内的 FFmpeg 包描述；没有该字段时兼容旧安装包。"""
+    manifest = Path(source) / 'version.json'
+    if not manifest.is_file():
+        return None
+    package = json.loads(manifest.read_text(encoding='utf-8')).get('ffmpeg_package')
+    if package is None:
+        return None
+    if not isinstance(package, dict):
+        raise InstallError('version.json 的 ffmpeg_package 格式无效')
+    package = dict(package)
+    path = PurePosixPath(str(package.get('path') or ''))
+    size = package.get('size')
+    digest = str(package.get('sha256') or '').lower()
+    if (package.get('architecture') != 'aarch64' or not str(package.get('version') or '').strip()
+            or path.is_absolute() or path.parts[:2] != ('vendor', 'ffmpeg') or '..' in path.parts
+            or not isinstance(size, int) or isinstance(size, bool) or size <= 0
+            or not re.fullmatch(r'[0-9a-f]{64}', digest)
+            or not str(package.get('source_url') or '').startswith('https://')):
+        raise InstallError('FFmpeg 包清单的路径、架构、大小或哈希无效')
+    package['path'], package['sha256'] = path.as_posix(), digest
+    return package
+
+
+def validate_ffmpeg_archive(archive, package=None):
+    archive = Path(archive)
+    if package:
+        if archive.stat().st_size != package['size']:
+            raise InstallError('FFmpeg 包大小不符')
+        if file_sha256(archive) != package['sha256']:
+            raise InstallError('FFmpeg 包 SHA-256 不符')
+    if not tarfile.is_tarfile(str(archive)):
+        raise InstallError('FFmpeg 下载内容不是有效的 tar.xz 压缩包')
+
+
+def download_ffmpeg_archive(archive, user_agent, package=None):
     """加速源优先；连接失败或连续 60 秒没有新数据时切换下一地址。"""
     errors = []
-    for index, url in enumerate(FFMPEG_DOWNLOAD_URLS):
+    urls = list(FFMPEG_DOWNLOAD_URLS)
+    source_url = str((package or {}).get('source_url') or '')
+    if source_url and source_url not in urls:
+        urls.append(source_url)
+    for index, url in enumerate(urls):
         try:
             print('正在下载 FFmpeg：%s' % url, flush=True)
             request = urllib.request.Request(url, headers={'User-Agent': user_agent})
             # timeout 同时作用于连接和每次 socket 读取，因此 60 秒无进度会主动断开。
             with urllib.request.urlopen(request, timeout=60) as stream, open(archive, 'wb') as out:
+                got = 0
                 while True:
                     chunk = stream.read(1024 * 1024)
                     if not chunk:
                         break
+                    got += len(chunk)
+                    if package and got > package['size']:
+                        raise InstallError('FFmpeg 下载超过清单大小')
                     out.write(chunk)
-            if not tarfile.is_tarfile(str(archive)):
-                raise InstallError('下载内容不是有效的 tar.xz 压缩包')
+            validate_ffmpeg_archive(archive, package)
             return
         except Exception as exc:
             errors.append('%s: %s' % (url.split('/')[2], str(exc)[:120]))
-            if index + 1 < len(FFMPEG_DOWNLOAD_URLS):
+            if index + 1 < len(urls):
                 print('下载失败或连续 60 秒无进度，切换下一下载地址重试', flush=True)
     raise InstallError('FFmpeg 下载失败：%s' % '；'.join(errors))
 
@@ -113,6 +165,29 @@ def write(path, content, mode=0o644, created=None):
         stream.write(content)
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def install_payload(source, target):
+    """保留 APP 下的相对目录；文本统一 LF，二进制按字节原子发布。"""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name('.' + target.name + '.tsf-' + secrets.token_hex(6))
+    binary = source.name.endswith('.tar.xz')
+    mode = 0o644 if binary or source.name == 'version.json' else 0o755
+    try:
+        if binary:
+            with source.open('rb') as src, temporary.open('xb') as out:
+                shutil.copyfileobj(src, out, 1024 * 1024)
+                out.flush()
+                os.fsync(out.fileno())
+        else:
+            with temporary.open('x', encoding='utf-8', newline='\n') as out:
+                out.write(source.read_text(encoding='utf-8'))
+                out.flush()
+                os.fsync(out.fileno())
+        os.chmod(temporary, mode)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class Installer:
@@ -336,14 +411,17 @@ class Installer:
     def payload(self):
         result = {APP + '/' + name: self.source / name
                   for name in ('sentry-viewer.py', 'tesla-live-sync.py', 'storage_allocation.py', 'storage_resize.py')}
+        result[APP + '/version.json'] = self.source / 'version.json'
+        package = ffmpeg_package(self.source)
+        if package:
+            result[APP + '/' + package['path']] = self.source / package['path']
         result.update({APP + '/' + name: self.source / 'scripts' / name for name in SCRIPTS})
         result.update({'/etc/init.d/' + name: self.source / 'openwrt/init.d' / name
                        for name in SERVICES})
         return result
 
     def source_hashes(self):
-        return {dest: hashlib.sha256(src.read_text(encoding='utf-8').encode()).hexdigest()
-                for dest, src in self.payload().items()}
+        return {dest: file_sha256(src) for dest, src in self.payload().items()}
 
     def existing_install(self):
         """返回 new / same / upgrade。
@@ -361,9 +439,9 @@ class Installer:
                            saved['options'] == self.options_record())
                 for name, info in self.runtime_files().items():
                     installed = self.path(APP) / 'runtime' / name
-                    matches = matches and hashlib.sha256(installed.read_bytes()).hexdigest() == info['sha256']
+                    matches = matches and file_sha256(installed) == info['sha256']
                 for name, digest in saved['files'].items():
-                    matches = matches and hashlib.sha256(self.path(name).read_bytes()).hexdigest() == digest
+                    matches = matches and file_sha256(self.path(name)) == digest
                 matches = matches and self.path(CONF).is_file()
                 matches = matches and (self.path(APP) / 'auth.conf').is_file()
                 matches = matches and (self.path(APP) / 'settings.json').is_file()
@@ -666,87 +744,171 @@ class Installer:
         return not ok
 
     def install_static_ffmpeg(self):
-        """固件的 ffmpeg 是精简构建时, 下载官方 arm64(aarch64) 静态包
-        (含 HEVC 解码 + libx264), 直接装到 /usr/bin/ffmpeg、/usr/bin/ffprobe;
-        该目录已有同名文件会被原子替换。优先使用加速地址，解压按文件名白名单提取。"""
+        """优先安装仓库随包的 aarch64 构建，全部校验通过后再替换系统文件。"""
         if platform.machine() not in ('aarch64', 'arm64'):
             raise InstallError('静态 FFmpeg 仅提供 aarch64 构建，当前架构为 %s' % platform.machine())
         target = self.path('/usr/bin')
-        binary = target / 'ffmpeg'
-        probe = target / 'ffprobe'
-        if binary.is_file() and os.access(binary, os.X_OK):
+        binary, probe = target / 'ffmpeg', target / 'ffprobe'
+        if (binary.is_file() and os.access(binary, os.X_OK)
+                and probe.is_file() and os.access(probe, os.X_OK)):
             ok, _caps = self.ffmpeg_ok(str(binary))
             if ok:
                 return {'ffmpeg': str(binary), 'ffprobe': str(probe)}
-        print('当前 FFmpeg 未通过完整能力校验（HEVC/H.264/MP4/滤镜），'
-              '正在通过加速地址下载 aarch64 静态构建并安装到 /usr/bin（60 秒无进度自动切换备用地址）', flush=True)
+        package = ffmpeg_package(self.source)
+        archive = self.source / package['path'] if package else None
+        if archive and archive.is_file():
+            try:
+                validate_ffmpeg_archive(archive, package)
+                print('使用安装包内置 FFmpeg %s，无需联网下载' % package['version'], flush=True)
+            except (OSError, InstallError) as exc:
+                print('随包 FFmpeg 校验失败，将尝试下载：%s' % exc, flush=True)
+                archive = None
+        else:
+            archive = None
+        download_dir = None
+        if archive is None:
+            print('正在获取 aarch64 静态 FFmpeg（60 秒无进度自动切换备用地址）', flush=True)
+            download_dir = Path(tempfile.mkdtemp(prefix='tsf-ff-', dir='/tmp'))
+            archive = download_dir / 'ffmpeg.tar.xz'
+            try:
+                download_ffmpeg_archive(archive, 'tsf-install/1.0', package)
+            except BaseException:
+                shutil.rmtree(download_dir, ignore_errors=True)
+                raise
         target.mkdir(parents=True, exist_ok=True)
-        archive = Path(tempfile.mkdtemp(prefix='tsf-ff-', dir='/tmp')) / 'ffmpeg.tar.xz'
+        staging = Path(tempfile.mkdtemp(prefix='.tsf-ff-stage-', dir=str(target)))
+        backups, published = {}, []
+        success = False
         try:
-            download_ffmpeg_archive(archive, 'tsf-install/1.0')
+            found = {}
             with tarfile.open(archive, 'r:xz') as tar:
                 for member in tar.getmembers():
                     name = PurePosixPath(member.name).name
-                    if not member.isfile() or name not in ('ffmpeg', 'ffprobe'):
+                    if name not in ('ffmpeg', 'ffprobe'):
                         continue
+                    if not member.isfile() or name in found:
+                        raise InstallError('FFmpeg 包包含重复或非普通文件：' + name)
+                    found[name] = member
+                if set(found) != {'ffmpeg', 'ffprobe'}:
+                    raise InstallError('FFmpeg 包必须同时包含 ffmpeg 和 ffprobe')
+                required = sum(member.size for member in found.values())
+                if shutil.disk_usage(target).free < required:
+                    raise InstallError('/usr/bin 空间不足，暂存 FFmpeg 需要 %d MiB' % (required >> 20))
+                for name, member in found.items():
                     source = tar.extractfile(member)
                     if source is None:
-                        continue
-                    temporary = target / ('.' + name + '.part')
-                    with open(temporary, 'wb') as out:
-                        shutil.copyfileobj(source, out)
-                    os.chmod(temporary, 0o755)
-                    temporary.replace(target / name)
+                        raise InstallError('无法读取 FFmpeg 包成员：' + name)
+                    with source, (staging / name).open('xb') as out:
+                        shutil.copyfileobj(source, out, 1024 * 1024)
+                        out.flush()
+                        os.fsync(out.fileno())
+                    os.chmod(staging / name, 0o755)
+            staged_ffmpeg = staging / 'ffmpeg'
+            run([str(staged_ffmpeg), '-version'], timeout=30)
+            run([str(staging / 'ffprobe'), '-version'], timeout=30)
+            ok, caps = self.ffmpeg_ok(str(staged_ffmpeg))
+            if not ok:
+                raise InstallError('静态 FFmpeg 校验失败（HEVC=%s libx264=%s scale=%s mp4=%s）'
+                                   % (caps['hevc'], caps['x264'], caps['scale'], caps['mp4']))
+            for name in ('ffmpeg', 'ffprobe'):
+                destination = target / name
+                if os.path.lexists(destination):
+                    backup = target / ('.' + name + '.tsf-old-' + secrets.token_hex(6))
+                    if destination.is_symlink():
+                        os.symlink(os.readlink(destination), backup)
+                    else:
+                        try:
+                            os.link(destination, backup)
+                        except OSError:
+                            shutil.copy2(destination, backup)
+                    backups[name] = backup
+                os.replace(staging / name, destination)
+                published.append(name)
+            ok, caps = self.ffmpeg_ok(str(binary))
+            if not ok:
+                raise InstallError('安装后的 FFmpeg 能力复核失败')
+            run([str(probe), '-version'], timeout=30)
+            if package:
+                state = self.path(FFMPEG_STATE)
+                state.parent.mkdir(parents=True, exist_ok=True)
+                temporary = state.with_name('.' + state.name + '.' + secrets.token_hex(6))
+                try:
+                    with temporary.open('x', encoding='utf-8') as out:
+                        json.dump({'version': package['version'], 'sha256': package['sha256'],
+                                   'ffmpeg': '/usr/bin/ffmpeg', 'ffprobe': '/usr/bin/ffprobe'}, out)
+                        out.flush()
+                        os.fsync(out.fileno())
+                    os.chmod(temporary, 0o644)
+                    temporary.replace(state)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            success = True
+        except BaseException:
+            for name in reversed(published):
+                (target / name).unlink(missing_ok=True)
+            for name, backup in backups.items():
+                if os.path.lexists(backup):
+                    os.replace(backup, target / name)
+            raise
         finally:
-            archive.unlink(missing_ok=True)
-            archive.parent.rmdir()
-        ok, caps = self.ffmpeg_ok(str(binary))
-        if not ok:
-            raise InstallError('静态 FFmpeg 校验失败（HEVC=%s libx264=%s scale=%s mp4=%s）；'
-                               '请手动放置 ffmpeg/ffprobe 到 /usr/bin 后用 --ffmpeg /usr/bin/ffmpeg 指定'
-                               % (caps['hevc'], caps['x264'], caps['scale'], caps['mp4']))
+            if success:
+                for backup in backups.values():
+                    backup.unlink(missing_ok=True)
+            shutil.rmtree(staging, ignore_errors=True)
+            if download_dir:
+                shutil.rmtree(download_dir, ignore_errors=True)
         return {'ffmpeg': str(binary), 'ffprobe': str(probe)}
 
     def provision_ffmpeg(self):
-        """--install-deps: 先补齐依赖, 再按 HEVC/libx264/滤镜/实际编码一帧做完整校验。
-        校验比"文件存在"更重要 —— OpenWrt 自带的精简 ffmpeg 通常没有 libx264 和 HEVC 解码,
-        表现就是网页里抽帧失败、转码报 Option not found。"""
-        if not (self.resolve_binary('ffmpeg') and self.resolve_binary('ffprobe')):
-            self.package_install()
-        resolved = {}
-        for name in ('ffmpeg', 'ffprobe'):
-            binary = self.resolve_binary(name)
-            if not binary:
-                raise InstallError('缺少 %s：请执行 `%s`，或用 --%s /usr/bin/%s 指定'
-                                   % (name, self.pkg_hint(('ffmpeg',)), name, name))
-            run([binary, '-version'], timeout=30)
-            resolved[name] = binary
-        ok, caps = self.ffmpeg_ok(resolved['ffmpeg'])
-        if not ok and not self.args.ffmpeg:
-            # 包管理器只装到精简版: 再试一次 full 库, 最后退回官方静态构建
+        """随包静态构建优先，包管理器兜底；最终失败只降级，不拖垮程序安装。"""
+        def paths():
+            return {name: self.resolve_binary(name) or '' for name in ('ffmpeg', 'ffprobe')}
+
+        def check(resolved):
+            if not all(resolved.values()):
+                return False, {}
+            try:
+                for binary in resolved.values():
+                    run([binary, '-version'], timeout=30)
+            except Exception:
+                return False, {}
+            return self.ffmpeg_ok(resolved['ffmpeg'])
+
+        resolved = paths()
+        ok, caps = check(resolved)
+        errors = []
+        if not ok:
+            print('FFmpeg 缺失或能力不足，优先使用安装包内置的静态构建', flush=True)
+            try:
+                resolved = self.install_static_ffmpeg()
+                ok, caps = check(resolved)
+            except Exception as exc:
+                errors.append('静态包: %s' % exc)
+                print('随包/静态 FFmpeg 安装失败，尝试系统包管理器：%s' % exc, flush=True)
+                resolved = paths()
+        if not ok:
             try:
                 self.package_install()
-            except InstallError as exc:
+            except Exception as exc:
+                errors.append('包管理器: %s' % exc)
                 print('补充安装完整 FFmpeg 失败：%s' % exc, flush=True)
-            resolved['ffmpeg'] = self.resolve_binary('ffmpeg') or resolved['ffmpeg']
-            resolved['ffprobe'] = self.resolve_binary('ffprobe') or resolved['ffprobe']
-            ok, caps = self.ffmpeg_ok(resolved['ffmpeg'])
+            resolved = paths()
+            ok, caps = check(resolved)
         if not ok:
             labels = {'hevc': 'HEVC 解码', 'mp4': 'MP4 封装', 'scale': 'scale', 'pad': 'pad',
                       'fps': 'fps', 'xstack': 'xstack', 'setsar': 'setsar', 'subtitles': 'subtitles'}
             missing = [label for key, label in labels.items() if not caps.get(key)]
             if not (caps.get('x264') or caps.get('v4l2')):
-                missing.insert(1 if missing else 0, 'H.264 编码（libx264/h264_v4l2m2m）')
-            print('FFmpeg 能力不足（缺少：%s），尝试静态构建' % '、'.join(missing), flush=True)
-            try:
-                resolved = self.install_static_ffmpeg()
-            except InstallError as exc:
-                # 网络问题不能拖垮整个云哨兵安装：保留系统 FFmpeg，网页会持续显示修复入口。
-                self.ffmpeg_degraded = True
-                print('警告：静态 FFmpeg 下载或校验失败：%s\n'
-                      '将继续安装现有程序；HEVC 抽帧、转码或水印功能可能暂不可用，'
-                      '联网后可执行 sh install.sh install 重新修复。' % exc, flush=True)
-                return resolved
+                missing.insert(0, 'H.264 编码（libx264/h264_v4l2m2m）')
+            for name in ('ffmpeg', 'ffprobe'):
+                if not resolved.get(name):
+                    missing.insert(0, name)
+            self.ffmpeg_degraded = True
+            print('警告：FFmpeg 仍不完整（%s）。%s\n'
+                  '将继续安装云哨兵网页程序；HEVC 抽帧、转码或水印暂不可用，'
+                  '以后可在网页一键修复或重跑 install.sh。'
+                  % ('、'.join(dict.fromkeys(missing)) or '未知错误', '；'.join(errors)), flush=True)
+            return resolved
         filters = run([resolved['ffmpeg'], '-hide_banner', '-filters'], timeout=60)
         for required in ('scale', 'pad', 'fps', 'xstack', 'setsar', 'subtitles'):
             if not re.search(r'\s' + required + r'\s', filters):
@@ -804,7 +966,8 @@ class Installer:
             resolved = self.provision_ffmpeg()
             print('%s：%s / %s' % ('FFmpeg 可用（能力不完整，安装继续）'
                                    if self.ffmpeg_degraded else 'FFmpeg 就绪',
-                                   resolved['ffmpeg'], resolved['ffprobe']), flush=True)
+                                   resolved.get('ffmpeg') or '不可用',
+                                   resolved.get('ffprobe') or '不可用'), flush=True)
         state = self.existing_install()
         self.upgrade = state == 'upgrade'
         if state == 'same':
@@ -856,7 +1019,9 @@ class Installer:
             # 具体容量与归档位置在首次打开网页时到「设置 → 存储分配」里完成。
             if not self.upgrade and usage.free < 256 * 1024 * 1024:
                 raise InstallError('数据盘至少需要 256 MiB 空闲空间，用于日志与首次设置')
-        app_bytes = sum(info['size'] for info in runtime_files.values()) + 128 * 1024 * 1024
+        package = ffmpeg_package(self.source)
+        app_bytes = (sum(info['size'] for info in runtime_files.values()) + 128 * 1024 * 1024
+                     + (package['size'] if package else 0))
         if shutil.disk_usage(self.path('/opt')).free < app_bytes:
             raise InstallError('/opt 至少需要 %d MiB 空闲空间' % ((app_bytes + (1 << 20) - 1) >> 20))
         gadgets = list(self.path('/sys/kernel/config/usb_gadget').glob('*/configs'))
@@ -899,34 +1064,41 @@ class Installer:
         for name in ('ffmpeg', 'ffprobe'):
             binary = (resolved or {}).get(name) or self.resolve_binary(name)
             if not binary:
-                raise InstallError('缺少 %s；请执行 `%s`，或用 --%s /usr/bin/%s 指定 '
-                                   '（--apply 安装时会自动尝试安装）'
-                                   % (name, self.pkg_hint(('ffmpeg',)), name, name))
+                if not self.ffmpeg_degraded:
+                    raise InstallError('缺少 %s；请执行 `%s`，或用 --%s /usr/bin/%s 指定 '
+                                       '（--apply 安装时会自动尝试安装）'
+                                       % (name, self.pkg_hint(('ffmpeg',)), name, name))
+                self.device[name] = ''
+                print('警告：%s 暂不可用，安装继续' % name, flush=True)
+                continue
             run([binary, '-version'])
             self.device[name] = binary
-        filters = run([self.device['ffmpeg'], '-hide_banner', '-filters'])
-        missing_filters = [name for name in ('scale', 'pad', 'fps', 'xstack', 'setsar', 'subtitles')
-                           if not re.search(r'\s' + name + r'\s', filters)]
-        if missing_filters:
-            if not self.ffmpeg_degraded:
-                raise InstallError('FFmpeg 缺少滤镜：' + '、'.join(missing_filters))
-            print('警告：FFmpeg 缺少滤镜 %s；安装继续，相关转码/水印功能暂不可用'
-                  % '、'.join(missing_filters), flush=True)
-        caps = self.ffmpeg_caps(self.device['ffmpeg'])
-        encoder = 'libx264' if caps['x264'] else ('h264_v4l2m2m' if caps['v4l2'] else '')
-        if not encoder and not self.ffmpeg_degraded:
-            raise InstallError('FFmpeg 缺少 H.264 编码器（libx264 或 h264_v4l2m2m）；'
-                               '请执行 `%s`（--apply 安装时会自动补装完整构建）'
-                               % self.pkg_hint(('ffmpeg', 'libx264')))
-        print('FFmpeg H.264 编码器：%s；HEVC 解码：%s'
-              % (encoder or '不可用', '可用' if caps['hevc'] else '缺失（抽帧/转码暂不可用）'),
-              flush=True)
-        if encoder:
-            run([self.device['ffmpeg'], '-v', 'error', '-f', 'lavfi', '-i',
-                 'color=size=64x64:rate=1', '-frames:v', '1', '-c:v', encoder,
-                 '-f', 'null', '-'])
-        elif self.ffmpeg_degraded:
-            print('警告：没有 H.264 编码器，本次跳过编码自检；安装后可联网重新修复', flush=True)
+        if not all(self.device.get(name) for name in ('ffmpeg', 'ffprobe')):
+            print('警告：FFmpeg/ffprobe 不完整，本次跳过媒体能力自检；安装后可从网页修复', flush=True)
+        else:
+            filters = run([self.device['ffmpeg'], '-hide_banner', '-filters'])
+            missing_filters = [name for name in ('scale', 'pad', 'fps', 'xstack', 'setsar', 'subtitles')
+                               if not re.search(r'\s' + name + r'\s', filters)]
+            if missing_filters:
+                if not self.ffmpeg_degraded:
+                    raise InstallError('FFmpeg 缺少滤镜：' + '、'.join(missing_filters))
+                print('警告：FFmpeg 缺少滤镜 %s；安装继续，相关转码/水印功能暂不可用'
+                      % '、'.join(missing_filters), flush=True)
+            caps = self.ffmpeg_caps(self.device['ffmpeg'])
+            encoder = 'libx264' if caps['x264'] else ('h264_v4l2m2m' if caps['v4l2'] else '')
+            if not encoder and not self.ffmpeg_degraded:
+                raise InstallError('FFmpeg 缺少 H.264 编码器（libx264 或 h264_v4l2m2m）；'
+                                   '请执行 `%s`（--apply 安装时会自动补装完整构建）'
+                                   % self.pkg_hint(('ffmpeg', 'libx264')))
+            print('FFmpeg H.264 编码器：%s；HEVC 解码：%s'
+                  % (encoder or '不可用', '可用' if caps['hevc'] else '缺失（抽帧/转码暂不可用）'),
+                  flush=True)
+            if encoder:
+                run([self.device['ffmpeg'], '-v', 'error', '-f', 'lavfi', '-i',
+                     'color=size=64x64:rate=1', '-frames:v', '1', '-c:v', encoder,
+                     '-f', 'null', '-'])
+            elif self.ffmpeg_degraded:
+                print('警告：没有 H.264 编码器，本次跳过编码自检；安装后可联网重新修复', flush=True)
         if not self.upgrade:
             with socket.socket() as probe:
                 try:
@@ -979,7 +1151,8 @@ class Installer:
                 shutil.copyfile(self.runtime / 'manifest.json', app_stage / 'runtime/manifest.json')
             for dest, src in self.payload().items():
                 if dest.startswith(APP + '/'):
-                    write(app_stage / Path(dest).name, src.read_text(encoding='utf-8'), 0o755)
+                    target = app_stage / PurePosixPath(dest).relative_to(APP)
+                    install_payload(src, target)
             password = ''  # 首次打开网页时引导设置新密码
             write(app_stage / 'auth.conf', 'user=admin\npass=%s\nsecret=%s\nttl=2592000\n' %
                   (password, secrets.token_hex(32)), 0o600)
@@ -1108,7 +1281,7 @@ class Installer:
         try:
             # 以现有目录为底复制(排除可再生的 cache 与 runtime)，保留账号、设置与上传素材
             shutil.copytree(app, staging, symlinks=True, dirs_exist_ok=True,
-                            ignore=shutil.ignore_patterns('cache', 'runtime'))
+                            ignore=shutil.ignore_patterns('cache', 'runtime', 'vendor'))
             (staging / 'cache').mkdir(exist_ok=True)
             os.chmod(staging, 0o755)
             if self.runtime:
@@ -1120,9 +1293,8 @@ class Installer:
                 shutil.copyfile(self.runtime / 'manifest.json', staging / 'runtime/manifest.json')
             for dest, src in self.payload().items():
                 if dest.startswith(APP + '/'):
-                    target = staging / Path(dest).name
-                    target.write_text(src.read_text(encoding='utf-8'), encoding='utf-8', newline='\n')
-                    os.chmod(target, 0o755)
+                    target = staging / PurePosixPath(dest).relative_to(APP)
+                    install_payload(src, target)
             if not (staging / 'auth.conf').is_file():
                 # 老用户删除 auth.conf 是主动关闭认证，升级时不能重新打开或强制首次设置。
                 print('提示：未检测到 auth.conf，保留免登录状态；可在网页「账号」中设置密码。')
@@ -1164,8 +1336,9 @@ class Installer:
                 raise InstallError('安装期间定时任务被其他程序修改，停止发布')
             self._replace_file(cron_path, cron_new, old_cron_mode)
             cron_changed = True
-            # 备份只留程序，旧缓存目录随备份释放，不在卡上多占一份
+            # 备份只留程序，旧缓存与 FFmpeg 大文件随备份释放，不在卡上多占一份
             shutil.rmtree(backup / 'cache', ignore_errors=True)
+            shutil.rmtree(backup / 'vendor', ignore_errors=True)
         except BaseException:
             if swapped:
                 if app.exists():

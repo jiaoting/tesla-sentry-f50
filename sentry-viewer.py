@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Tesla 哨兵视频查看器 - 单文件, 纯标准库, 无依赖
 功能: 多路播放器(4路/6路自适应) / 时间线 / 锁车语音上传(经归档同步写入车机U盘)
 访问: http://<f50-ip>:8080
@@ -540,7 +541,7 @@ SOCK_TIMEOUT = 30               # 单连接读写超时秒数, 防慢连接长�
 # 升级方式: 从 GitHub 仓库拉 version.json (清单) 比对版本号, 再下 sentry-viewer.py 覆盖本机文件并重启。
 # 国内直连 raw.githubusercontent 与 fastly/testingcf.jsdelivr 会被 RST 或 TLS 干扰 (实测 1 秒内断开),
 # 下面这几个是逐个实测能通的 (数字为实测耗时); 全部并发竞速, 任一可用即可, 抖动时互相补位。
-APP_VERSION = "2026.11.28.025"
+APP_VERSION = "2026.11.28.026"
 VIEWER_BUILD = APP_VERSION
 OTA_REPOS = ["jiaoting/tesla-sentry-f50"]   # 仅保留作者仓库, 分支仍可选择
 OTA_DEFAULT_REPO = OTA_REPOS[0]
@@ -1390,61 +1391,291 @@ def _install_dep_packages(kind, manager):
 
 
 FFMPEG_DOWNLOAD_URLS = (
-    "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz",
     "https://gh-proxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
     "ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
     "https://gh-proxy.org/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
     "ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
 )
+FFMPEG_STATE = os.environ.get("TSF_FFMPEG_STATE", "/etc/tesla-sentry-ffmpeg.json")
+_FFMPEG_PACKAGE_LOCK = threading.Lock()
 
 
-def _download_ffmpeg_archive(archive):
-    """官方源优先；连接失败或连续 60 秒没有新数据时切换加速源。"""
-    errors = []
-    for index, url in enumerate(FFMPEG_DOWNLOAD_URLS):
+def _ffmpeg_file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _ffmpeg_atomic_json(path, data):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".ffmpeg-", dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            json.dump(data, out, ensure_ascii=False)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temporary, path)
+    finally:
         try:
-            print("正在下载 FFmpeg: %s" % url, flush=True)
-            request = urllib.request.Request(url, headers={"User-Agent": "tsf-viewer/" + APP_VERSION})
-            # timeout 同时作用于连接和每次 socket 读取，因此 60 秒无进度会主动断开。
-            with urllib.request.urlopen(request, timeout=60) as stream, open(archive, "wb") as out:
-                while True:
-                    chunk = stream.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    out.write(chunk)
-            if not tarfile.is_tarfile(archive):
-                raise RuntimeError("下载内容不是有效的 tar.xz 压缩包")
-            return
-        except Exception as ex:
-            errors.append("%s: %s" % (url.split("/")[2], str(ex)[:120]))
-            if index + 1 < len(FFMPEG_DOWNLOAD_URLS):
-                print("下载失败或连续 60 秒无进度，改用加速地址重试", flush=True)
-    raise RuntimeError("FFmpeg 下载失败: %s" % "; ".join(errors))
+            os.unlink(temporary)
+        except OSError:
+            pass
 
 
-def _install_static_ffmpeg():
-    """固件源里的 ffmpeg 是精简构建时, 下载 aarch64 官方静态包到 /usr/bin。"""
+def _ffmpeg_local_manifest():
+    try:
+        with open(os.path.join(APP_HOME, "version.json"), encoding="utf-8") as stream:
+            data = json.load(stream)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _ffmpeg_save_local_manifest(manifest):
+    if not isinstance(manifest, dict):
+        return
+    clean = {key: value for key, value in manifest.items() if not str(key).startswith("_")}
+    try:
+        _ffmpeg_atomic_json(os.path.join(APP_HOME, "version.json"), clean)
+    except OSError as ex:
+        print("ffmpeg manifest cache: %s" % ex, flush=True)
+
+
+def _ffmpeg_package_info(manifest):
+    package = (manifest or {}).get("ffmpeg_package")
+    if not isinstance(package, dict):
+        raise RuntimeError("更新清单没有 FFmpeg 仓库包")
+    package = dict(package)
+    path = str(package.get("path") or "")
+    size = package.get("size")
+    digest = str(package.get("sha256") or "").lower()
+    if (package.get("architecture") != "aarch64" or not str(package.get("version") or "").strip()
+            or not path.startswith("vendor/ffmpeg/") or path.startswith("/") or "\\" in path
+            or any(part in ("", ".", "..") for part in path.split("/"))
+            or not isinstance(size, int) or isinstance(size, bool) or size <= 0
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or not str(package.get("source_url") or "").startswith("https://")):
+        raise RuntimeError("FFmpeg 包清单的路径、架构、大小或哈希无效")
+    package["path"], package["sha256"] = path, digest
+    return package
+
+
+def _ffmpeg_validate_archive(archive, package):
+    if os.path.getsize(archive) != package["size"]:
+        raise RuntimeError("FFmpeg 包大小不符")
+    if _ffmpeg_file_sha256(archive) != package["sha256"]:
+        raise RuntimeError("FFmpeg 包 SHA-256 不符")
+    if not tarfile.is_tarfile(archive):
+        raise RuntimeError("FFmpeg 内容不是有效的 tar.xz 压缩包")
+
+
+def _download_ffmpeg_archive(archive, package):
+    """仓库原始文件优先，顺序下载避免多镜像同时缓存 50MiB 大文件。"""
+    quoted = urllib.parse.quote(package["path"], safe="/")
+    urls = [base + "/" + quoted + "?ts=%d" % int(time.time()) for base in _src_order()]
+    urls.extend(FFMPEG_DOWNLOAD_URLS)
+    if package["source_url"] not in urls:
+        urls.append(package["source_url"])
+    os.makedirs(os.path.dirname(archive), exist_ok=True)
+    temporary = archive + ".part"
+    errors = []
+    try:
+        for index, url in enumerate(urls):
+            try:
+                print("正在下载 FFmpeg: %s" % url, flush=True)
+                request = urllib.request.Request(url, headers={
+                    "User-Agent": "tsf-viewer/" + APP_VERSION, "Cache-Control": "no-cache"})
+                with urllib.request.urlopen(request, timeout=60) as stream, open(temporary, "wb") as out:
+                    got = 0
+                    while True:
+                        chunk = stream.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        got += len(chunk)
+                        if got > package["size"]:
+                            raise RuntimeError("FFmpeg 下载超过清单大小")
+                        out.write(chunk)
+                        _ota_progress(got=got, total=package["size"])
+                    out.flush()
+                    os.fsync(out.fileno())
+                _ffmpeg_validate_archive(temporary, package)
+                os.replace(temporary, archive)
+                return
+            except Exception as ex:
+                errors.append("%s: %s" % (urllib.parse.urlsplit(url).netloc, str(ex)[:120]))
+                if index + 1 < len(urls):
+                    print("下载失败或连续 60 秒无进度，切换下一地址", flush=True)
+    finally:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+    raise RuntimeError("FFmpeg 仓库包下载失败: %s" % "; ".join(errors))
+
+
+def _ffmpeg_dependency_status():
+    ffmpeg = _pick_bin("TSF_FFMPEG", DEP_FFMPEG_CANDIDATES)
+    ffprobe = _pick_bin("TSF_FFPROBE", DEP_FFPROBE_CANDIDATES)
+    missing = _ffmpeg_missing(ffmpeg)
+    if not _binary_ok(ffprobe):
+        missing.append("ffprobe")
+    return missing, ffmpeg, ffprobe
+
+
+def _ffmpeg_refresh_paths(ffmpeg, ffprobe):
+    global FFMPEG_BIN, FFPROBE_BIN
+    FFMPEG_BIN, FFPROBE_BIN = ffmpeg, ffprobe
+    os.environ["TSF_FFMPEG"], os.environ["TSF_FFPROBE"] = ffmpeg, ffprobe
+    _FF_OK.update(t=0.0, v=None)
+    _FF_PROBE.update(t=0.0, v=None)
+    _FF_CAPS.update(t=0.0, v=None)
+    _dep_save_paths(ffmpeg, ffprobe)
+    ffmpeg_ready(refresh=True)
+    ffmpeg_capabilities(refresh=True)
+
+
+def _ffmpeg_state_read():
+    try:
+        with open(FFMPEG_STATE, encoding="utf-8") as stream:
+            state = json.load(stream)
+        return state if isinstance(state, dict) else {}
+    except Exception:
+        return {}
+
+
+def _install_static_ffmpeg(manifest, target="/usr/bin"):
+    """安装与安装器共用格式的仓库包；失败时恢复两个旧文件。"""
     if platform.machine() not in ("aarch64", "arm64"):
         raise RuntimeError("静态 FFmpeg 仅支持 aarch64, 当前为 %s" % platform.machine())
-    tempdir = tempfile.mkdtemp(prefix="tsf-ff-", dir="/tmp")
-    archive = os.path.join(tempdir, "ffmpeg.tar.xz")
+    package = _ffmpeg_package_info(manifest)
+    archive = os.path.join(APP_HOME, package["path"])
+    if os.path.isfile(archive):
+        try:
+            _ffmpeg_validate_archive(archive, package)
+            print("使用设备缓存的 FFmpeg %s，无需重复下载" % package["version"], flush=True)
+        except (OSError, RuntimeError) as ex:
+            print("本地 FFmpeg 包无效，将重新下载: %s" % ex, flush=True)
+            _download_ffmpeg_archive(archive, package)
+    else:
+        _download_ffmpeg_archive(archive, package)
+    _ffmpeg_save_local_manifest(manifest)
+    os.makedirs(target, exist_ok=True)
+    staging = tempfile.mkdtemp(prefix=".tsf-ff-stage-", dir=target)
+    backups, published = {}, []
+    success = False
     try:
-        _download_ffmpeg_archive(archive)
+        found = {}
         with tarfile.open(archive, "r:xz") as tar:
             for member in tar.getmembers():
                 name = os.path.basename(member.name)
-                if not member.isfile() or name not in ("ffmpeg", "ffprobe"):
+                if name not in ("ffmpeg", "ffprobe"):
                     continue
+                if not member.isfile() or name in found:
+                    raise RuntimeError("FFmpeg 包包含重复或非普通文件: " + name)
+                found[name] = member
+            if set(found) != {"ffmpeg", "ffprobe"}:
+                raise RuntimeError("FFmpeg 包必须同时包含 ffmpeg 和 ffprobe")
+            required = sum(member.size for member in found.values())
+            if shutil.disk_usage(target).free < required:
+                raise RuntimeError("/usr/bin 空间不足，暂存 FFmpeg 需要 %d MiB" % (required >> 20))
+            for name, member in found.items():
                 source = tar.extractfile(member)
                 if source is None:
-                    continue
-                temporary = "/usr/bin/." + name + ".part"
-                with open(temporary, "wb") as out:
-                    shutil.copyfileobj(source, out)
-                os.chmod(temporary, 0o755)
-                os.replace(temporary, "/usr/bin/" + name)
+                    raise RuntimeError("无法读取 FFmpeg 包成员: " + name)
+                destination = os.path.join(staging, name)
+                with source, open(destination, "xb") as out:
+                    shutil.copyfileobj(source, out, 1024 * 1024)
+                    out.flush()
+                    os.fsync(out.fileno())
+                os.chmod(destination, 0o755)
+        staged_ffmpeg = os.path.join(staging, "ffmpeg")
+        staged_probe = os.path.join(staging, "ffprobe")
+        subprocess.run([staged_ffmpeg, "-version"], stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=30, check=True)
+        subprocess.run([staged_probe, "-version"], stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=30, check=True)
+        missing = _ffmpeg_missing(staged_ffmpeg)
+        if missing:
+            raise RuntimeError("静态 FFmpeg 能力不足: " + "、".join(missing))
+        encoders = _ff_dump(staged_ffmpeg, "-encoders")
+        encoder = "libx264" if re.search(r"^\s*\S{6}\s+libx264\s", encoders, re.M) else "h264_v4l2m2m"
+        subprocess.run([staged_ffmpeg, "-v", "error", "-f", "lavfi", "-i",
+                        "color=size=64x64:rate=1", "-frames:v", "1", "-c:v", encoder,
+                        "-f", "null", "-"], stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=120, check=True)
+        for name in ("ffmpeg", "ffprobe"):
+            destination = os.path.join(target, name)
+            if os.path.lexists(destination):
+                fd, backup = tempfile.mkstemp(prefix="." + name + ".old-", dir=target)
+                os.close(fd)
+                os.unlink(backup)
+                if os.path.islink(destination):
+                    os.symlink(os.readlink(destination), backup)
+                else:
+                    try:
+                        os.link(destination, backup)
+                    except OSError:
+                        shutil.copy2(destination, backup)
+                backups[name] = backup
+            os.replace(os.path.join(staging, name), destination)
+            published.append(name)
+        if _ffmpeg_missing(os.path.join(target, "ffmpeg")) or not _binary_ok(os.path.join(target, "ffprobe")):
+            raise RuntimeError("安装后的 FFmpeg 能力复核失败")
+        _ffmpeg_atomic_json(FFMPEG_STATE, {
+            "version": package["version"], "sha256": package["sha256"],
+            "ffmpeg": os.path.join(target, "ffmpeg"), "ffprobe": os.path.join(target, "ffprobe")})
+        success = True
+    except BaseException:
+        for name in reversed(published):
+            try:
+                os.unlink(os.path.join(target, name))
+            except OSError:
+                pass
+        for name, backup in backups.items():
+            if os.path.lexists(backup):
+                os.replace(backup, os.path.join(target, name))
+        raise
     finally:
-        shutil.rmtree(tempdir, ignore_errors=True)
+        if success:
+            for backup in backups.values():
+                try:
+                    os.unlink(backup)
+                except OSError:
+                    pass
+        shutil.rmtree(staging, ignore_errors=True)
+    return {"ffmpeg": os.path.join(target, "ffmpeg"), "ffprobe": os.path.join(target, "ffprobe")}
+
+
+def _sync_ffmpeg_package(manifest=None, repair=False):
+    """相同 SHA 零下载；系统完整且不受仓库管理时不替换。"""
+    with _FFMPEG_PACKAGE_LOCK:
+        if manifest is None:
+            local = _ffmpeg_local_manifest()
+            local_package = (local or {}).get("ffmpeg_package")
+            local_path = (os.path.join(APP_HOME, str(local_package.get("path") or ""))
+                          if isinstance(local_package, dict) else "")
+            manifest = local if local_path and os.path.isfile(local_path) else ota_latest(True)
+        package = _ffmpeg_package_info(manifest)
+        missing, _ffmpeg, _ffprobe = _ffmpeg_dependency_status()
+        state = _ffmpeg_state_read()
+        managed = bool(state.get("sha256"))
+        if state.get("sha256") == package["sha256"] and not missing:
+            return True, "FFmpeg 已是仓库版本 %s，无需重复下载" % package["version"]
+        if not repair and not managed and not missing:
+            return True, "系统 FFmpeg 能力完整，保留系统版本"
+        try:
+            paths = _install_static_ffmpeg(manifest)
+            _ffmpeg_refresh_paths(paths["ffmpeg"], paths["ffprobe"])
+        except Exception as ex:
+            if managed and not missing:
+                return False, "FFmpeg 更新失败，已保留旧版 %s：%s" % (state.get("version") or "", str(ex)[:120])
+            return False, "仓库 FFmpeg 安装失败：%s" % str(ex)[:160]
+        missing, _ffmpeg, _ffprobe = _ffmpeg_dependency_status()
+        if missing:
+            return False, "仓库 FFmpeg 安装后仍缺: " + "、".join(missing)
+        return True, "已安装仓库 FFmpeg %s" % package["version"]
 
 
 def _dep_save_paths(ffmpeg, ffprobe):
@@ -1456,50 +1687,59 @@ def _dep_save_paths(ffmpeg, ffprobe):
         pass
 
 
-def ensure_dependencies():
-    """检测 ffmpeg/ffprobe、HEVC 解码、H.264 编码与全部必需滤镜, 缺什么就装什么。
-
-    顺序: 按 OpenWrt 版本用 apk/opkg 安装完整 FFmpeg -> 仍不完整再退回 aarch64
-    静态构建。返回 (是否完整, 说明); 失败只报告, 不阻断主程序升级。
-    """
-    ffmpeg = _pick_bin("TSF_FFMPEG", DEP_FFMPEG_CANDIDATES)
-    ffprobe = _pick_bin("TSF_FFPROBE", DEP_FFPROBE_CANDIDATES)
-    missing = _ffmpeg_missing(ffmpeg)
-    if not _binary_ok(ffprobe):
-        missing.append("ffprobe")
-    if not missing:
+def ensure_dependencies(manifest=None, update_package=False):
+    """仓库静态包优先，包管理器兜底；OTA 另行同步已管理包的新版本。"""
+    missing, ffmpeg, ffprobe = _ffmpeg_dependency_status()
+    if not missing and not update_package:
         return True, "运行库完整"
     detail = []
+    try:
+        package_ok, package_msg = _sync_ffmpeg_package(manifest, repair=bool(missing))
+    except Exception as ex:
+        package_ok, package_msg = False, str(ex)[:160]
+    if not package_ok:
+        detail.append(package_msg)
+    missing, ffmpeg, ffprobe = _ffmpeg_dependency_status()
+    if not missing:
+        if package_ok or update_package:
+            return package_ok, package_msg
+        return True, package_msg
     kind, manager, _ = _pkg_manager()
     if manager:
         problem = _install_dep_packages(kind, manager)
-        ffmpeg = _pick_bin("TSF_FFMPEG", DEP_FFMPEG_CANDIDATES)
-        ffprobe = _pick_bin("TSF_FFPROBE", DEP_FFPROBE_CANDIDATES)
-        missing = _ffmpeg_missing(ffmpeg)
-        if not _binary_ok(ffprobe):
-            missing.append("ffprobe")
+        missing, ffmpeg, ffprobe = _ffmpeg_dependency_status()
         if not missing:
-            _dep_save_paths(ffmpeg, ffprobe)
-            return True, "已通过 %s 安装运行库" % kind
+            _ffmpeg_refresh_paths(ffmpeg, ffprobe)
+            prefix = package_msg + "；" if detail else ""
+            return True, prefix + "已通过 %s 安装运行库" % kind
         detail.append("%s 安装后仍缺 %s" % (kind, "、".join(missing)))
         if problem:
             detail.append("%s: %s" % (kind, problem))
     else:
         detail.append("系统没有 apk/opkg")
-    try:
-        _install_static_ffmpeg()
-        ffmpeg = _pick_bin("TSF_FFMPEG", DEP_FFMPEG_CANDIDATES)
-        ffprobe = _pick_bin("TSF_FFPROBE", DEP_FFPROBE_CANDIDATES)
-        missing = _ffmpeg_missing(ffmpeg)
-        if not _binary_ok(ffprobe):
-            missing.append("ffprobe")
-        if not missing:
-            _dep_save_paths(ffmpeg, ffprobe)
-            return True, "已安装静态 FFmpeg 运行库"
-        detail.append("静态构建仍缺 %s" % "、".join(missing))
-    except Exception as ex:
-        detail.append("静态 FFmpeg: %s" % str(ex)[:120])
     return False, "运行库不完整（%s）" % "；".join(detail)
+
+
+def _ffmpeg_reconcile_after_ota():
+    """旧主程序不认识 ffmpeg_package；新版首次启动后在网页可用时补偿一次。"""
+    state = _ota_state()
+    reconciled = state.get("ffmpeg_reconciled") or {}
+    if state.get("applied") != APP_VERSION or reconciled.get("version") == APP_VERSION:
+        return
+    state["ffmpeg_reconciled"] = {"version": APP_VERSION, "running": True, "at": int(time.time())}
+    _ota_state_write(state)
+    try:
+        manifest = _ffmpeg_local_manifest()
+        if not manifest or str(manifest.get("version")) != APP_VERSION:
+            manifest = ota_latest(True)
+        ok, message = ensure_dependencies(manifest=manifest, update_package=True)
+    except Exception as ex:
+        ok, message = False, str(ex)[:160]
+    state = _ota_state()
+    state["ffmpeg_reconciled"] = {"version": APP_VERSION, "ok": ok,
+                                  "message": message, "at": int(time.time())}
+    _ota_state_write(state)
+    print("ffmpeg ota reconcile: %s" % message, flush=True)
 
 
 def ota_apply(force=False):
@@ -1603,7 +1843,7 @@ def ota_apply(force=False):
     #      缺什么就按 OpenWrt 版本自动安装, 避免升级后缩略图/转码/水印失效。
     _ota_progress(stage="正在检查运行库…", pct=96)
     try:
-        dep_ok, dep_msg = ensure_dependencies()
+        dep_ok, dep_msg = ensure_dependencies(manifest=j, update_package=True)
     except Exception as ex:
         dep_ok, dep_msg = False, str(ex)[:160]
     if not dep_ok:
@@ -1645,7 +1885,9 @@ def ota_apply(force=False):
         print("ota init.d deploy:", ex)
     # 7) 记账
     _ota_state_write({"applied": latest, "prev": prev, "at": int(time.time()),
-                      "modules": saved})
+                      "modules": saved,
+                      "ffmpeg_reconciled": {"version": latest, "ok": dep_ok,
+                                            "message": dep_msg, "at": int(time.time())}})
     msg = ("已重新安装 %s" if not newer else "已升级到 %s") % latest + ", 服务正在重启…"
     if mods:
         msg += " 模块已同步: " + ", ".join(n for n, _ in mods)
@@ -14406,46 +14648,14 @@ def _pkg_hint(packages):
 
 
 def ffmpeg_fix():
-    """一键修复 ffmpeg: 用设备包管理器安装完整版, 再重新探测能力。
-
-    从老系统升级上来的设备常见「装了 ffmpeg 但缺 HEVC 解码 / H.264 编码」,
-    这里直接调 apk / opkg 补装完整包, 省得用户登录 SSH 敲命令。"""
-    def complete(c):
-        return bool(c.get("exists") and c.get("hevc") and (c.get("x264") or c.get("v4l2")))
-
-    caps = ffmpeg_capabilities(refresh=True)
-    if complete(caps):
-        return True, "当前 ffmpeg 组件已完整（HEVC 解码与 H.264 编码可用），无需修复。"
-    missing = []
-    if not caps.get("exists"):
-        missing.append("ffmpeg 本体")
-    else:
-        if not caps.get("hevc"):
-            missing.append("HEVC 解码")
-        if not (caps.get("x264") or caps.get("v4l2")):
-            missing.append("H.264 编码")
-    kind, pm, _ = _pkg_manager()
-    if not pm:
-        return False, "未找到 apk/opkg 包管理器，无法自动安装。缺少：%s。请手动安装完整 ffmpeg 后刷新页面。" % "、".join(missing)
-    # 装 ffmpeg 本体和完整库; 是否带 libx264 会在安装后重新探测, 缺了就提示用安装器补静态版
-    cmds = _pkg_install_commands(kind, pm, ["ffmpeg", "libx264", "libffmpeg-full"])
-    failed = []
-    for cmd in cmds:
-        try:
-            p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                               timeout=600, errors="replace")
-            if p.returncode != 0:
-                failed.append(" ".join(cmd))
-        except Exception:
-            failed.append(" ".join(cmd))
-    caps = ffmpeg_capabilities(refresh=True)
-    if complete(caps):
-        return True, "已安装完整 ffmpeg，HEVC 解码与 H.264 编码已可用，缩略图与转码恢复正常。"
-    hint = _pkg_hint(("ffmpeg",))
-    if failed:
-        return False, "自动修复未完成（缺少 %s，失败命令：%s）。请检查网络后重试，或在设备上手动执行 %s 安装完整 ffmpeg。" \
-                      % ("、".join(missing), "；".join(failed), hint)
-    return False, "已执行安装，但仍缺少 %s。请重启服务后重试，或在设备上手动执行 %s 安装完整 ffmpeg。" % ("、".join(missing), hint)
+    """一键修复统一走仓库静态包，失败后才由 ensure_dependencies 尝试包管理器。"""
+    missing, _ffmpeg, _ffprobe = _ffmpeg_dependency_status()
+    if not missing:
+        return True, "当前 FFmpeg 的 HEVC、H.264、MP4 与必需滤镜均完整，无需修复。"
+    ok, message = ensure_dependencies()
+    if ok:
+        return True, "修复完成：" + message
+    return False, message + "。已保留原有文件，可检查网络后重试。"
 
 
 def video_encoder_args(preset="superfast"):
@@ -24583,6 +24793,7 @@ if __name__ == "__main__":
     if not ffmpeg_ready(refresh=True):
         print("WARN: ffmpeg/ffprobe 不可用 (%s / %s): 缩略图与清晰度转码会失效, "
               "请重跑 install.sh apply 自动安装并配置 FFmpeg" % (FFMPEG_BIN, FFPROBE_BIN), flush=True)
+    threading.Thread(target=_ffmpeg_reconcile_after_ota, daemon=True, name="ffmpeg-ota-reconcile").start()
     # 升级 boot guard 已去掉: OTA 重启用 execv 原地替换, 新版本代码直接跑起来,
     # 如果 import 失败/启动崩掉, 进程会自然退出, procd respawn 是天然安全网。
     # 启动自愈: 若上次退出时镜像仍处于管理挂载状态, 恢复导出。

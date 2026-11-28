@@ -56,9 +56,9 @@ rm -f "$TSF_DIR/sentry-viewer.py" "$TSF_DIR/tesla-live-sync.py" \
       "$TSF_DIR/tsf-check.sh" "$TSF_DIR/tsf-start.sh" \
       "$TSF_DIR/uninstall.sh" "$TSF_DIR/auth.conf" \
       "$TSF_DIR/sentry-viewer.bak.py" "$TSF_DIR"/*.log
-rm -rf "$TSF_DIR/fonts" "$TSF_CACHE/thumbs" "$TSF_CACHE/tel-cache" \
+rm -rf "$TSF_DIR/fonts" "$TSF_DIR/vendor/ffmpeg" "$TSF_CACHE/thumbs" "$TSF_CACHE/tel-cache" \
        "$TSF_CACHE/stitch-tmp"
-rm -f /etc/tesla-sentry.conf
+rm -f /etc/tesla-sentry.conf /etc/tesla-sentry-ffmpeg.json
 
 if [ "$PURGE" = "1" ]; then
     echo "==> [--purge] 删除镜像与归档录像 (不可恢复)"
